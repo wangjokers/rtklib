@@ -377,8 +377,8 @@ static double gfobs(const obsd_t *obs, int i, int j, int k, const nav_t *nav)
     
     freq1=sat2freq(obs[i].sat,obs[i].code[0],nav);
     freq2=sat2freq(obs[i].sat,obs[i].code[k],nav);
-    L1=sdobs(obs,i,j,0);
-    L2=sdobs(obs,i,j,k);
+    L1=sdobs(obs,i,j,0);//取第一个频点的差值
+    L2=sdobs(obs,i,j,k);//取第二个频点的差值
     if (freq1==0.0||freq2==0.0||L1==0.0||L2==0.0) return 0.0;
     return L1*CLIGHT/freq1-L2*CLIGHT/freq2;
 }
@@ -612,8 +612,8 @@ static void detslp_ll(rtk_t *rtk, const obsd_t *obs, int i, int rcv)
             continue;
         }
         /* restore previous LLI */
-        if (rcv==1) LLI=getbitu(&rtk->ssat[sat-1].slip[f],0,2); /* rover */
-        else        LLI=getbitu(&rtk->ssat[sat-1].slip[f],2,2); /* base  */
+        if (rcv==1) LLI=getbitu(&rtk->ssat[sat-1].slip[f],0,2); /* rover 后两位是流动站*/
+        else        LLI=getbitu(&rtk->ssat[sat-1].slip[f],2,2); /* base  前面两位是基准站*/
         
         /* detect slip by cycle slip flag in LLI */
         if (rtk->tt>=0.0) { /* forward */
@@ -631,7 +631,7 @@ static void detslp_ll(rtk_t *rtk, const obsd_t *obs, int i, int rcv)
             slip=LLI;
         }
         /* detect slip by parity unknown flag transition in LLI */
-        if (((LLI&2)&&!(obs[i].LLI[f]&2))||(!(LLI&2)&&(obs[i].LLI[f]&2))) {
+        if (((LLI&2)&&!(obs[i].LLI[f]&2))||(!(LLI&2)&&(obs[i].LLI[f]&2))) {//如果上一个历元有半周跳，本历元有没有半周跳的话
             errmsg(rtk,"slip detected half-cyc (sat=%2d rcv=%d F=%d LLI=%x->%x)\n",
                    sat,rcv,f+1,LLI,obs[i].LLI[f]);
             slip|=1;
@@ -713,8 +713,8 @@ static void udbias(rtk_t *rtk, double tt, const obsd_t *obs, const int *sat,
     for (i=0;i<ns;i++) {
         
         /* detect cycle slip by LLI */
-        for (k=0;k<rtk->opt.nf;k++) rtk->ssat[sat[i]-1].slip[k]&=0xFC;
-        detslp_ll(rtk,obs,iu[i],1);
+        for (k=0;k<rtk->opt.nf;k++) rtk->ssat[sat[i]-1].slip[k]&=0xFC;//后两位重置成0
+        detslp_ll (rtk,obs,iu[i],1);
         detslp_ll(rtk,obs,ir[i],2);
         
         /* detect cycle slip by geometry-free phase jump */
@@ -726,7 +726,7 @@ static void udbias(rtk_t *rtk, double tt, const obsd_t *obs, const int *sat,
         
         /* update half-cycle valid flag */
         for (k=0;k<nf;k++) {
-            rtk->ssat[sat[i]-1].half[k]=
+            rtk->ssat[sat[i]-1].half[k]=//half半周跳没有太大的作用
                 !((obs[iu[i]].LLI[k]&2)||(obs[ir[i]].LLI[k]&2));
         }
     }
@@ -793,7 +793,7 @@ static void udbias(rtk_t *rtk, double tt, const obsd_t *obs, const int *sat,
         /* correct phase-bias offset to enssure phase-code coherency */
         if (j>0) {
             for (i=1;i<=MAXSAT;i++) {
-                if (rtk->x[IB(i,k,&rtk->opt)]!=0.0) rtk->x[IB(i,k,&rtk->opt)]+=offset/j;
+                if (rtk->x[IB(i,k,&rtk->opt)]!=0.0) rtk->x[IB(i,k,&rtk->opt)]+=offset/j;//这一部分是为了保证相位和码的偏差一致，但是没有太大意义？
             }
         }
         /* set initial states of phase-bias */
@@ -1239,7 +1239,7 @@ static int ddidx(rtk_t *rtk, int *ix)
     trace(3,"ddidx   :\n");
     
     for (i=0;i<MAXSAT;i++) for (j=0;j<NFREQ;j++) {
-        rtk->ssat[i].fix[j]=0;
+        rtk->ssat[i].fix[j]=0; /* no fix ，遍历一遍卫星和频率*/
     }
     for (m=0;m<6;m++) { /* m=0:GPS/SBS,1:GLO,2:GAL,3:BDS,4:QZS,5:IRN */
         
@@ -1256,7 +1256,8 @@ static int ddidx(rtk_t *rtk, int *ix)
                     rtk->ssat[i-k].azel[1]>=rtk->opt.elmaskar&&!nofix) {
                     rtk->ssat[i-k].fix[f]=2; /* fix */
                     break;
-                }
+                }//如果锁定了，且没有滑动，且仰角大于截止角度，就认为是固定的
+                //直接选满足条件的第一个卫星，传统认为选取卫星高度角最大的卫星作为参考卫星
                 else rtk->ssat[i-k].fix[f]=1;
             }
             for (j=k;j<k+MAXSAT;j++) {
@@ -1278,6 +1279,65 @@ static int ddidx(rtk_t *rtk, int *ix)
     }
     return nb;
 }
+
+///* index for SD to DD transformation matrix D --------------------------------*/
+//static int ddidx(rtk_t* rtk, int* ix)
+//{
+//    int i, j, k, m, f, nb = 0, na = rtk->na, nf = NF(&rtk->opt), nofix;
+//
+//    trace(3, "ddidx   :\n");
+//
+//    for (i = 0; i < MAXSAT; i++) for (j = 0; j < NFREQ; j++) {
+//        rtk->ssat[i].fix[j] = 0; /* no fix */
+//    }
+//    for (m = 0; m < 6; m++) { /* m=0:GPS/SBS,1:GLO,2:GAL,3:BDS,4:QZS,5:IRN */
+//
+//        nofix = (m == 1 && rtk->opt.glomodear == 0) || (m == 3 && rtk->opt.bdsmodear == 0);
+//
+//        for (f = 0, k = na; f < nf; f++, k += MAXSAT) {
+//            int highest_azimuth_index = -1; // 用于存储最高仰角的卫星索引
+//            double highest_azimuth = -1.0; // 用于存储最高仰角
+//
+//            for (i = k; i < k + MAXSAT; i++) {
+//                if (rtk->x[i] == 0.0 || !test_sys(rtk->ssat[i - k].sys, m) ||
+//                    !rtk->ssat[i - k].vsat[f] || !rtk->ssat[i - k].half[f]) {
+//                    continue;
+//                }
+//                if (rtk->ssat[i - k].lock[f] > 0 && !(rtk->ssat[i - k].slip[f] & 2) &&
+//                    rtk->ssat[i - k].azel[1] >= rtk->opt.elmaskar && !nofix) {
+//                    // 检查当前卫星的仰角是否高于已记录的最高仰角
+//                    if (rtk->ssat[i - k].azel[1] > highest_azimuth) {
+//                        highest_azimuth = rtk->ssat[i - k].azel[1];
+//                        highest_azimuth_index = i; // 更新最高仰角卫星的索引
+//                    }
+//                }
+//            }
+//            // 如果找到了最高仰角的卫星，则将其标记为固定
+//            if (highest_azimuth_index != -1) {
+//                rtk->ssat[highest_azimuth_index - k].fix[f] = 2; /* fix */
+//            }
+//            for (j = k; j < k + MAXSAT; j++) {
+//                if (i == j || rtk->x[j] == 0.0 || !test_sys(rtk->ssat[j - k].sys, m) ||
+//                    !rtk->ssat[j - k].vsat[f]) {
+//                    continue;
+//                }
+//                if (rtk->ssat[j - k].lock[f] > 0 && !(rtk->ssat[j - k].slip[f] & 2) &&
+//                    rtk->ssat[highest_azimuth_index - k].vsat[f] &&
+//                    rtk->ssat[j - k].azel[1] >= rtk->opt.elmaskar && !nofix) {
+//                    ix[nb * 2] = highest_azimuth_index; /* state index of ref bias */
+//                    ix[nb * 2 + 1] = j; /* state index of target bias */
+//                    nb++;
+//                    rtk->ssat[j - k].fix[f] = 2; /* fix */
+//                }
+//                else {
+//                    rtk->ssat[j - k].fix[f] = 1;
+//                }
+//            }
+//        }
+//    }
+//    return nb;
+//}
+
 /* restore SD (single-differenced) ambiguity ---------------------------------*/
 static void restamb(rtk_t *rtk, const double *bias, int nb, double *xa)
 {
@@ -1363,7 +1423,7 @@ static int resamb_LAMBDA(rtk_t *rtk, double *bias, double *xa)
         return 0;
     }
     /* index of SD to DD transformation matrix D */
-    ix=imat(nx,2);
+    ix=imat(nx,2);//状态量的个数
     if ((nb=ddidx(rtk,ix))<=0) {
         errmsg(rtk,"no valid double-difference\n");
         free(ix);
@@ -1396,7 +1456,7 @@ static int resamb_LAMBDA(rtk_t *rtk, double *bias, double *xa)
         /* validation by popular ratio-test */
         if (s[0]<=0.0||s[1]/s[0]>=opt->thresar[0]) {
             
-            /* transform float to fixed solution (xa=xa-Qab*Qb\(b0-b)) */
+            /* transform float to fixed solution (xa=xa-Qab*Qb\(b0-b))在19.3.2有对应的公式对照 */
             for (i=0;i<na;i++) {
                 rtk->xa[i]=rtk->x[i];
                 for (j=0;j<na;j++) rtk->Pa[i+j*na]=rtk->P[i+j*nx];
@@ -1442,7 +1502,7 @@ static int valpos(rtk_t *rtk, const double *v, const double *R, const int *vflg,
 {
     double fact=thres*thres;
     int i,stat=1,sat1,sat2,type,freq;
-    char *stype;
+    char *stype;//没有进行操作的
     
     trace(3,"valpos  : nv=%d thres=%.1f\n",nv,thres);
     
@@ -1582,7 +1642,7 @@ static int relpos(rtk_t *rtk, const obsd_t *obs, int nu, int nr,
     }
     /* resolve integer ambiguity by LAMBDA */
     if (stat!=SOLQ_NONE&&resamb_LAMBDA(rtk,bias,xa)>1) {
-        
+        //模糊度固定成功，接下来进行后验滤波
         if (zdres(0,obs,nu,rs,dts,var,svh,nav,xa,opt,0,y,e,azel,freq)) {
             
             /* post-fit reisiduals for fixed solution */

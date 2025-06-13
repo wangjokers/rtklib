@@ -375,6 +375,9 @@ static int rescode(int iter, const obsd_t *obs, int n, const double *rs,
                 continue;
             }
         }
+		else {
+			dion=vion=dtrp=vtrp=0.0; //首个历元，dion和dtrp都为0，不加电离层对流层改正
+		}
         /* psendorange with code bias correction */
         if ((P=prange(obs+i,nav,opt,&vmeas))==0.0) continue;//伪距测量与代码偏差修正
         
@@ -453,7 +456,7 @@ static int estpos(const obsd_t *obs, int n, const double *rs, const double *dts,
     
     trace(3,"estpos  : n=%d\n",n);
     
-    v=mat(n+4,1); H=mat(NX,n+4); var=mat(n+4,1);
+    v=mat(n+4,1); H=mat(NX,n+4); var=mat(n+4,1);//h：八行（未知数个数）
     
     for (i=0;i<3;i++) x[i]=sol->rr[i];//首个历元，sol为空，x=0；非首历元泽取上一个结果作为初值
     
@@ -481,11 +484,19 @@ static int estpos(const obsd_t *obs, int n, const double *rs, const double *dts,
         for (j=0;j<NX;j++) {//初值+改正值
             x[j]+=dx[j];//概率位置回带回接收机钟的位置
         }
-        if (norm(dx,NX)<1E-4) {//做差值判断变化量是否收敛了
-            sol->type=0;
-            sol->time=timeadd(obs[0].time,-x[3]/CLIGHT);//修正gps的接收机钟偏
-            sol->dtr[0]=x[3]/CLIGHT; /* receiver clock bias (s) */
-            sol->dtr[1]=x[4]/CLIGHT; /* GLO-GPS time offset (s) */
+        if (norm(dx,NX)<1E-4) {//做差值判断变化量是否收敛了，改正数足够小的时候，存储结果结束迭代
+            sol->type=0;//坐标采用xyz-ecef
+            sol->time=timeadd(obs[0].time,-x[3]/CLIGHT);//修正gps的接收机钟偏,去除了dtr后的信号发射瞬间的卫星钟面时刻
+            sol->dtr[0] = x[3] / CLIGHT; /* receiver clock bias (s) 程序原本的版本*/
+   //         switch(opt->navsys) {
+			//	case SYS_GPS: sol->dtr[0] = x[3] / CLIGHT; break; /* GPS time */
+			//	case SYS_GLO: sol->dtr[0] = x[4] / CLIGHT; break; /* GLO time */
+			//	case SYS_GAL: sol->dtr[0] = x[5] / CLIGHT; break; /* GAL time */
+   //             case SYS_CMP: sol->dtr[0] = x[6] / CLIGHT; break; /* BDS time 北斗的接收机钟差赋值*/
+   //             case SYS_IRN: sol->dtr[0] = x[7] / CLIGHT; break;    
+			//}
+            /*以上是添加多系统的原因*/
+            sol->dtr[1]=x[4]/CLIGHT; /* GLO-GPS time offset (s)单系统定位，以下四者都为零，无用 */
             sol->dtr[2]=x[5]/CLIGHT; /* GAL-GPS time offset (s) */
             sol->dtr[3]=x[6]/CLIGHT; /* BDS-GPS time offset (s) */
             sol->dtr[4]=x[7]/CLIGHT; /* IRN-GPS time offset (s) */
@@ -498,11 +509,11 @@ static int estpos(const obsd_t *obs, int n, const double *rs, const double *dts,
             sol->age=sol->ratio=0.0;
             
             /* validate solution *///结果检验
-            if ((stat=valsol(azel,vsat,n,opt,v,nv,NX,msg))) {
-                sol->stat=opt->sateph==EPHOPT_SBAS?SOLQ_SBAS:SOLQ_SINGLE;
+            if ((stat=valsol(azel,vsat,n,opt,v,nv,NX,msg))) {           //返回值stat=1表示检验通过,0表示检验不通过
+                sol->stat=opt->sateph==EPHOPT_SBAS?SOLQ_SBAS:SOLQ_SINGLE;//ppp的spp此步会=SOLQ_SINGLE
             }
             free(v); free(H); free(var);
-            return stat;
+            return stat;//精度的理想定位，到此结束spp的流程
         }
     }
     if (i>=MAXITR) sprintf(msg,"iteration divergent i=%d",i);

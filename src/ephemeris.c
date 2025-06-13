@@ -187,7 +187,7 @@ extern void alm2pos(gtime_t time, const alm_t *alm, double *rs, double *dts)
 * return : satellite clock bias (s) without relativeity correction,不包含相对路效应修正
 * notes  : see ref [1],[7],[8]
 *          satellite clock does not include relativity correction and tdg
-*-----------------------------------------------------------------------------*/
+*-----------------高精度的spp卫星钟还需要相对论效应改正和tgd改正，此函数无------------------------------------------------------------*/
 extern double eph2clk(gtime_t time, const eph_t *eph)
 {
     double t,ts;
@@ -232,7 +232,7 @@ extern void eph2pos(gtime_t time, const eph_t *eph, double *rs, double *dts,
     
     switch ((sys=satsys(eph->sat,&prn))) {//根据不同卫星系统设置相应的地球引力常数 mu 和 地球自转角速度 omge
         case SYS_GAL: mu=MU_GAL; omge=OMGE_GAL; break;
-        case SYS_CMP: mu=MU_CMP; omge=OMGE_CMP; break;
+        case SYS_CMP: mu=MU_CMP; omge=OMGE_CMP; break;//地球引力常数，地球自传角速度
         default:      mu=MU_GPS; omge=OMGE;     break;
     }
     M=eph->M0+(sqrt(mu/(eph->A*eph->A*eph->A))+eph->deln)*tk;//计算平近点角 M (E.4.3)
@@ -259,7 +259,7 @@ extern void eph2pos(gtime_t time, const eph_t *eph, double *rs, double *dts,
     
     /* beidou geo satellite */
     if (sys==SYS_CMP&&(prn<=5||prn>=59)) { /* ref [9] table 4-1 */
-        O=eph->OMG0+eph->OMGd*tk-omge*eph->toes;
+        O=eph->OMG0+eph->OMGd*tk-omge*eph->toes;//改正升交点的经度
         sinO=sin(O); cosO=cos(O);
         xg=x*cosO-y*cosi*sinO;
         yg=x*sinO+y*cosi*cosO;
@@ -507,7 +507,7 @@ static int ephclk(gtime_t time, gtime_t teph, int sat, const nav_t *nav,
     const nav_t *nav: 星历数据结构的指针，包含所有卫星的星历信息。
     double *dts: 输出参数，存放计算得到的卫星钟差。
     */
-    eph_t  *eph;//指向不同卫星的指针变量
+    eph_t  *eph;//指向不同卫星的指针变量，北斗的eph_t结构体需要更改吗？
     geph_t *geph;
     seph_t *seph;
     int sys;

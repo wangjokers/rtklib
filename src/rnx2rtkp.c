@@ -196,7 +196,7 @@ int main(int argc, char **argv)
     infile[1] = "d:\\desktop\\data2\\brdm0320.25p";
     infile[2] = "d:\\desktop\\data2\\WUM0MGXFIN_20250320000_01D_05M_ORB.SP3";
     infile[3] = "d:\\desktop\\data2\\WUM0MGXFIN_20250320000_01D_30S_CLK.CLK";
-    outfile = "d:\\desktop\\data2\\bds_gps_debug_2_BDS2.pos";
+    outfile = "d:\\desktop\\data2\\bds_result_2_B1I_B2a.pos";
     //printf("opening file: [%s]\n", infile[0]);
     //printf("path length  : %zu\n", strlen(infile[0]));
     //用林提供的数据运行发现运行失败，只选中北斗无数据，加了gps发现解算的数据质量不好，中间丢失了大块的时间段
@@ -213,9 +213,9 @@ int main(int argc, char **argv)
 
     /*这里进行用北斗来spp的调试看看效果如何*/
      	 //n = 2;
-       // infile[0] = "D:\\Desktop\\spp_bds\\wuh20320.25o";
-       // infile[1] = "D:\\Desktop\\spp_bds\\brdm0320.25p";
-       // outfile = "D:\\Desktop\\spp_bds\\spp_bds_text.pos";
+       // infile[0] = "d:\\desktop\\spp_bds\\wuh20320.25o";
+       // infile[1] = "d:\\desktop\\spp_bds\\brdm0320.25p";
+       // outfile = "d:\\desktop\\spp_bds\\spp_bds_text.pos";
 
     /*冰菓视频版本进行解算,执行失败，应该是有其他地方还需要更改的*/
     //n = 8;

@@ -671,8 +671,8 @@ static int code2freq_BDS(uint8_t code, double *freq)
         case '1': *freq=FREQ1;     return 9; /* B1C */
         case '2': *freq=FREQ1_CMP; return 0; /* B1I */
         case '7': *freq=FREQ2_CMP; return 9; /* B2I/B2b */
-        case '5': *freq=FREQ5;     return 9; /* B2a */
-        case '6': *freq=FREQ3_CMP; return 1; /* B3 */
+        case '5': *freq=FREQ5;     return 1; /* B2a */
+        case '6': *freq=FREQ3_CMP; return 9; /* B3 */
         case '8': *freq=FREQ8;     return 9; /* B2ab */
         //只用2和6两个频点
         //case '2': *freq=FREQ1_CMP; return 0; /* B1I */
@@ -1333,7 +1333,7 @@ extern int filter(double *x, double *P, const double *H, const double *v,
     }
     info=filter_(x_,P_,H_,v,R,k,m,xp_,Pp_);//去0后真正的EKF计算
     for (i=0;i<k;i++) {
-        x[ix[i]]=xp_[i];//跟新x阵
+        x[ix[i]]=xp_[i];//更新x阵
         for (j=0;j<k;j++) P[ix[i]+ix[j]*n]=Pp_[i+j*k];
     }
     free(ix); free(x_); free(xp_); free(P_); free(Pp_); free(H_);

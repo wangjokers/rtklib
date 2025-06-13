@@ -581,7 +581,7 @@ static void udclk_ppp(rtk_t *rtk)
         if (rtk->opt.sateph==EPHOPT_PREC) {
             /* time of prec ephemeris is based gpst 检查是否为精密星历，精密星历的时间是基于gps时间的，只给gps槽的ic 0取值。*/
             /* negelect receiver inter-system bias  */
-            dtr=rtk->sol.dtr[0];//PPP的EKF  dtr初值，直接采用本历元spp的结果，注意是所有的历元而非仅仅首个历元！
+            dtr=rtk->sol.dtr[3];//PPP的EKF  dtr初值，直接采用本历元spp的结果，注意是所有的历元而非仅仅首个历元！
         }
         else {  //不是精密星历采用前一秒的数据，并考虑系统间时差信息。
             dtr=i==0?rtk->sol.dtr[0]:rtk->sol.dtr[0]+rtk->sol.dtr[i];
