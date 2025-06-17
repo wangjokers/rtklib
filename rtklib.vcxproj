@@ -173,7 +173,6 @@
     <ClCompile Include="src\sbas.c" />
     <ClCompile Include="src\solution.c" />
     <ClCompile Include="src\stream.c" />
-    <ClCompile Include="src\streamsvr.c" />
     <ClCompile Include="src\tides.c" />
   </ItemGroup>
   <ItemGroup>
