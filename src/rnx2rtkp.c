@@ -179,7 +179,11 @@ int main(int argc, char **argv)
         else if (*argv[i]=='-') printhelp();                                    //输入-，打印帮助
         else if (n<MAXFILE) infile[n++]=argv[i];                                //循环判断完一遍参数之后，认为参数是文件路径，用infile数组接收
     }//进一步的赋值，比较繁琐
-
+        /*这里进行用北斗来spp的调试看看效果如何*/
+    n = 2;
+    infile[0] = "d:\\desktop\\spp_bds\\wuh20320.25o";
+    infile[1] = "d:\\desktop\\spp_bds\\brdm0320.25p";
+    outfile = "d:\\desktop\\spp_bds\\spp_bds_brdc.pos";
 
 
 
@@ -211,11 +215,7 @@ int main(int argc, char **argv)
     //outfile = "D:\\Desktop\\data\\bds_only.pos";
 
 
-    /*这里进行用北斗来spp的调试看看效果如何*/
-     	 n = 2;
-        infile[0] = "d:\\desktop\\spp_bds\\wuh20320.25o";
-        infile[1] = "d:\\desktop\\spp_bds\\brdm0320.25p";
-        outfile = "d:\\desktop\\spp_bds\\spp_bds_brdc.pos";
+
 
     /*冰菓视频版本进行解算,执行失败，应该是有其他地方还需要更改的*/
     //n = 8;
