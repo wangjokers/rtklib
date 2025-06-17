@@ -920,20 +920,10 @@ static int execses(gtime_t ts, gtime_t te, double ti, const prcopt_t *popt,
     /* read obs and nav data */ //读取文件时是二次开发的关键
     if (!readobsnav(ts,te,ti,infile,index,n,&popt_,&obss,&navs,stas)) return 0;
     
-    /* read dcb parameters */
-    if (*fopt->dcb) {
-        reppath(fopt->dcb,path,ts,"","");
-        readdcb(path,&navs,stas);
-    }
 
 
     //差分GPS、动态相对定位，静态定位时必须进行天线相位中心改正
-    else if (PMODE_DGPS<=popt_.mode&&popt_.mode<=PMODE_STATIC) {
-        if (!antpos(&popt_,2,&obss,&navs,stas,fopt->stapos)) {
-            freeobsnav(&obss,&navs);
-            return 0;
-        }
-    }
+
     /* open solution statistics */
     if (flag&&sopt->sstat>0) {
         strcpy(statfile,outfile);
@@ -1055,7 +1045,7 @@ static int execses_b(gtime_t ts, gtime_t te, double ti, const prcopt_t *popt,
     trace(3,"execses_b: n=%d outfile=%s\n",n,outfile);
     //读sp3，clk，FCB，ppp改正信息文件、sbas并初始化rtcm
     /* read prec ephemeris and sbas data */
-    readpreceph(infile,n,popt,&navs,&sbss);
+
     
     for (i=0;i<n;i++) if (strstr(infile[i],"%b")) break;
     //n为输入文件的个数
@@ -1164,9 +1154,7 @@ extern int postpos(gtime_t ts, gtime_t te, double ti, double tu,
     
     trace(3,"postpos : ti=%.0f tu=%.0f n=%d outfile=%s\n",ti,tu,n,outfile);
     
-    /* open processing session */ //开始处理,文件读取，赋值navs、pcvs、pcvsrv
-    //读取天线文件，atx和格网改正文件
-    if (!openses(popt,sopt,fopt,&navs,&pcvss,&pcvsr)) return -1;
+
    
     if (ts.time!=0&&te.time!=0&&tu>=0.0) { //判断起始时间ts、te、处理单位时间是否大于0
         if (timediff(te,ts)<0.0) {  //结束时间早于开始时间

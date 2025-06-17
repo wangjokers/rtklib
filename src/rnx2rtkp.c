@@ -215,7 +215,7 @@ int main(int argc, char **argv)
      	 n = 2;
         infile[0] = "d:\\desktop\\spp_bds\\wuh20320.25o";
         infile[1] = "d:\\desktop\\spp_bds\\brdm0320.25p";
-        outfile = "d:\\desktop\\spp_bds\\spp_bds_text.pos";
+        outfile = "d:\\desktop\\spp_bds\\spp_bds_brdc.pos";
 
     /*冰菓视频版本进行解算,执行失败，应该是有其他地方还需要更改的*/
     //n = 8;
