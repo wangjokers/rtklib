@@ -132,7 +132,6 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="src\download.c" />
     <ClCompile Include="src\ephemeris.c" />
     <ClCompile Include="src\geoid.c" />
     <ClCompile Include="src\gis.c" />
