@@ -132,7 +132,6 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="src\convkml.c" />
     <ClCompile Include="src\convrnx.c" />
     <ClCompile Include="src\datum.c" />
     <ClCompile Include="src\download.c" />
