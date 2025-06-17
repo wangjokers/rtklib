@@ -134,6 +134,7 @@
   <ItemGroup>
     <ClCompile Include="src\ephemeris.c" />
     <ClCompile Include="src\geoid.c" />
+    <ClCompile Include="src\gis.c" />
     <ClCompile Include="src\ionex.c" />
     <ClCompile Include="src\lambda.c" />
     <ClCompile Include="src\options.c" />
