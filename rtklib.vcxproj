@@ -132,7 +132,6 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="src\datum.c" />
     <ClCompile Include="src\download.c" />
     <ClCompile Include="src\ephemeris.c" />
     <ClCompile Include="src\geoid.c" />
