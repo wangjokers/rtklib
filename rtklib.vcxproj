@@ -143,6 +143,8 @@
     <ClCompile Include="src\postpos.c">
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</ExcludedFromBuild>
     </ClCompile>
+    <ClCompile Include="src\ppp.c" />
+    <ClCompile Include="src\ppp_ar.c" />
     <ClCompile Include="src\preceph.c" />
     <ClCompile Include="src\rcvraw.c" />
     <ClCompile Include="src\rcv\binex.c" />
