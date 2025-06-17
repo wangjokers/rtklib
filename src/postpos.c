@@ -265,16 +265,7 @@ static int inputobs(obsd_t *obs, int solq, const prcopt_t *popt)
         for (i=0;i<nr&&n<MAXOBS*2;i++) obs[n++]=obss.data[iobsr+i];
         iobsu+=nu;
         
-        /* update sbas corrections */
-        while (isbs<sbss.n) {
-            time=gpst2time(sbss.msgs[isbs].week,sbss.msgs[isbs].tow);
-            
-            if (getbitu(sbss.msgs[isbs].msg,8,6)!=9) { /* except for geo nav */
-                sbsupdatecorr(sbss.msgs+isbs,&navs);
-            }
-            if (timediff(time,obs[0].time)>-1.0-DTTOL) break;
-            isbs++;
-        }
+   
         /* update rtcm ssr corrections */
         if (*rtcm_file) {
             update_rtcm_ssr(obs[0].time);
@@ -352,10 +343,7 @@ static void procpos(FILE *fp, const prcopt_t *popt, const solopt_t *sopt,
         }                                                         //相当于把北斗数据前置，后续obs时只用前十个文件，后续的也有数据，但是无用，第55至192均为空
         if (n<=0) continue;                                         //n：本历元观测到了几颗目标卫星系统的卫星
         
-        /* carrier-phase bias correction */ //使用了FCB文件进行载波相位改正
-        if (!strstr(popt->pppopt,"-ENA_FCB")) {
-            corr_phase_bias_ssr(obs,n,&navs);
-        }
+   
         //进入不同的模式的定位计算
         if (!rtkpos(&rtk,obs,n,&navs)) continue;
         
@@ -536,15 +524,15 @@ static void readpreceph(char **infile, int n, const prcopt_t *prcopt,
     sbs->n =sbs->nmax =0;//清除SBAS数据
     
     /* read precise ephemeris files */
-    for (i=0;i<n;i++) {//过滤掉包含 %r 或 %b 的文件（通常用于表示基站和流动站文件），并调用 readsp3 函数读取精密星历数据
-        if (strstr(infile[i],"%r")||strstr(infile[i],"%b")) continue;
-        readsp3(infile[i],nav,0);
-    }
-    /* read precise clock files */
-    for (i=0;i<n;i++) {
-        if (strstr(infile[i],"%r")||strstr(infile[i],"%b")) continue;
-        readrnxc(infile[i],nav);
-    }
+    //for (i=0;i<n;i++) {//过滤掉包含 %r 或 %b 的文件（通常用于表示基站和流动站文件），并调用 readsp3 函数读取精密星历数据
+    //    if (strstr(infile[i],"%r")||strstr(infile[i],"%b")) continue;
+    //    //readsp3(infile[i],nav,0);
+    //}
+    ///* read precise clock files */
+    //for (i=0;i<n;i++) {
+    //    if (strstr(infile[i],"%r")||strstr(infile[i],"%b")) continue;
+    //    readrnxc(infile[i],nav);
+    //}
     /* read sbas message files */
     for (i=0;i<n;i++) {
         if (strstr(infile[i],"%r")||strstr(infile[i],"%b")) continue;
@@ -928,22 +916,7 @@ static int execses(gtime_t ts, gtime_t te, double ti, const prcopt_t *popt,
         traceopen(tracefile);
         tracelevel(sopt->trace);
     }
-    /* read ionosphere data file *///做ppp需要用到的，在-o文件里面
-    if (*fopt->iono&&(ext=strrchr(fopt->iono,'.'))) {
-        if (strlen(ext)==4&&(ext[3]=='i'||ext[3]=='I')) {
-            reppath(fopt->iono,path,ts,"","");
-            readtec(path,&navs,1);
-        }
-    }
-    /* read erp data *///地球自传参数
-    if (*fopt->eop) {
-        free(navs.erp.data); navs.erp.data=NULL; navs.erp.n=navs.erp.nmax=0;
-        reppath(fopt->eop,path,ts,"","");
-        if (!readerp(path,&navs.erp)) {
-            showmsg("error : no erp data %s",path);
-            trace(2,"no erp data %s\n",path);
-        }
-    }
+
     /* read obs and nav data */ //读取文件时是二次开发的关键
     if (!readobsnav(ts,te,ti,infile,index,n,&popt_,&obss,&navs,stas)) return 0;
     
@@ -952,24 +925,8 @@ static int execses(gtime_t ts, gtime_t te, double ti, const prcopt_t *popt,
         reppath(fopt->dcb,path,ts,"","");
         readdcb(path,&navs,stas);
     }
-    /* set antenna paramters */
-    //设置pcv参数
-    if (popt_.mode!=PMODE_SINGLE) {
-        setpcv(obss.n>0?obss.data[0].time:timeget(),&popt_,&navs,&pcvss,&pcvsr,
-               stas);
-    }
-    /* read ocean tide loading parameters */
-    //读取海潮文件blq
-    if (popt_.mode>PMODE_SINGLE&&*fopt->blq) {
-        readotl(&popt_,fopt->blq,stas);
-    }
-    /* rover/reference fixed position */
-    if (popt_.mode==PMODE_FIXED) {
-        if (!antpos(&popt_,1,&obss,&navs,stas,fopt->stapos)) {
-            freeobsnav(&obss,&navs);
-            return 0;
-        }
-    }
+
+
     //差分GPS、动态相对定位，静态定位时必须进行天线相位中心改正
     else if (PMODE_DGPS<=popt_.mode&&popt_.mode<=PMODE_STATIC) {
         if (!antpos(&popt_,2,&obss,&navs,stas,fopt->stapos)) {

@@ -144,9 +144,6 @@
     <ClCompile Include="src\tides.c">
       <Filter>源文件\src</Filter>
     </ClCompile>
-    <ClCompile Include="src\tle.c">
-      <Filter>源文件\src</Filter>
-    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\rtklib.h">

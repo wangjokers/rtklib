@@ -175,7 +175,6 @@
     <ClCompile Include="src\stream.c" />
     <ClCompile Include="src\streamsvr.c" />
     <ClCompile Include="src\tides.c" />
-    <ClCompile Include="src\tle.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\rtklib.h" />
