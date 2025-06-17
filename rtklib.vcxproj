@@ -162,7 +162,6 @@
     <ClCompile Include="src\rtcm3e.c" />
     <ClCompile Include="src\rtkcmn.c" />
     <ClCompile Include="src\rtkpos.c" />
-    <ClCompile Include="src\rtksvr.c" />
     <ClCompile Include="src\sbas.c" />
     <ClCompile Include="src\solution.c" />
     <ClCompile Include="src\stream.c" />
