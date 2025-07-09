@@ -192,11 +192,11 @@ int main(int argc, char **argv)
     //outfile = "D:\\Desktop\\demo04\\test01\\chan_source_cmpbds.pos";
     //3.04版本用混合系统包含北斗的进行测试
     n = 4;
-    infile[0] = "d:\\desktop\\data2\\wuh20320.25o";
-    infile[1] = "d:\\desktop\\data2\\brdm0320.25p";
-    infile[2] = "d:\\desktop\\data2\\WUM0MGXFIN_20250320000_01D_05M_ORB.SP3";
-    infile[3] = "d:\\desktop\\data2\\WUM0MGXFIN_20250320000_01D_30S_CLK.CLK";
-    outfile = "d:\\desktop\\data2\\bds_result_2_B1I_B2a.pos";
+    infile[0] = "d:\\desktop\\crx\\DCB_text\\URUM00CHN_R_20240240000_01D_30S_MO.24o";
+    infile[1] = "d:\\desktop\\crx\\DCB_text\\BRDM00DLR_S_20240240000_01D_MN.rnx";
+    infile[2] = "d:\\desktop\\crx\\DCB_text\\GRG0MGXFIN_20240240000_01D_05M_ORB.SP3";
+    infile[3] = "d:\\desktop\\crx\\DCB_text\\GRG0MGXFIN_20240240000_01D_30S_CLK.CLK";
+    outfile = "d:\\desktop\\crx\\DCB_text\\URUM_BDS_3_B1I_B3_DCB_blq.pos";
     //printf("opening file: [%s]\n", infile[0]);
     //printf("path length  : %zu\n", strlen(infile[0]));
     //用林提供的数据运行发现运行失败，只选中北斗无数据，加了gps发现解算的数据质量不好，中间丢失了大块的时间段
