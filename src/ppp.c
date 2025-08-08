@@ -388,8 +388,8 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
         
         /* P1-C1,P2-C2 dcb correction (C1->P1,C2->P2) */
         if (sys==SYS_GPS||sys==SYS_GLO) {
-            if (obs->code[i]==CODE_L1C) P[i]+=nav->cbias[obs->sat-1][1];
-            if (obs->code[i]==CODE_L2C) P[i]+=nav->cbias[obs->sat-1][2];
+            if (obs->code[i]==CODE_L1C) P[i]+=nav->cbias[obs->sat-1][1][1];
+            if (obs->code[i]==CODE_L2C) P[i]+=nav->cbias[obs->sat-1][2][0];
         }
     }
 

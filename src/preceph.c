@@ -57,6 +57,11 @@
 #define MAXDTE      900.0           /* max time difference to ephem time (s) */
 #define EXTERR_CLK  1E-3            /* extrapolation error for clock (m/s) */
 #define EXTERR_EPH  5E-7            /* extrapolation error for ephem (m/s^2) */
+#define MAX_BIAS_SYS 4              /* # of constellations supported */
+
+/* table to translate code to code bias table index  */
+static int8_t code_bias_ix[MAX_BIAS_SYS][MAXCODE];
+
 
 /* satellite code to satellite system ----------------------------------------*/
 static int code2sys(char code)
@@ -360,7 +365,7 @@ static int readdcbf(const char *file, nav_t *nav, const sta_t *sta)
         else if (strstr(buff,"DIFFERENTIAL (P1-C1) CODE BIASES")) type=2;
         else if (strstr(buff,"DIFFERENTIAL (P2-C2) CODE BIASES")) type=3;
         
-        if (!type||sscanf(buff,"%s %s",str1,str2)<1) continue;
+        if (!type||sscanf(buff,"%s %s",str1,str2)<1) continue;//读取dcb文件的一行，判断dcb类型,确保程序读取的格式正确才进行解析
         
         if ((cbias=str2num(buff,26,9))==0.0) continue;
         
@@ -374,13 +379,46 @@ static int readdcbf(const char *file, nav_t *nav, const sta_t *sta)
             }
         }
         else if ((sat=satid2no(str1))) { /* satellite dcb */
-            nav->cbias[sat-1][type-1]=cbias*1E-9*CLIGHT; /* ns -> m */
+            nav->cbias[sat-1][type-1][0] = cbias * 1E-9 * CLIGHT; /* ns -> m */
         }
     }
     fclose(fp);
     
     return 1;
 }
+
+
+
+/* satellite system to index */
+static int sys2ix(int sys)
+{
+    switch (sys) {
+    case SYS_GPS: return 0;
+    case SYS_SBS: return 0;
+    case SYS_GLO: return 1;
+    case SYS_GAL: return 2;
+    case SYS_CMP: return 3;
+    case SYS_QZS: return 4;
+    case SYS_IRN: return 5;
+    }
+    return 0;
+}
+/* translate satellite system and code to code bias table index ----------------
+*       -1 = code not supported
+*        0 = reference code (0 bias)
+*        1-3 = table index for code
+* ----------------------------------------------------------------------------*/
+extern int code2bias_ix(int sys, int code) {
+    int sys_ix;
+
+    sys_ix = sys2ix(sys);
+    if (sys_ix < MAX_BIAS_SYS)
+        return code_bias_ix[sys_ix][code];
+    else
+        return 0;
+}
+
+
 /* read DCB parameters ---------------------------------------------------------
 * read differential code bias (DCB) parameters
 * args   : char   *file       I   DCB parameters file (wild-card * expanded)
@@ -392,13 +430,13 @@ static int readdcbf(const char *file, nav_t *nav, const sta_t *sta)
 *-----------------------------------------------------------------------------*/
 extern int readdcb(const char *file, nav_t *nav, const sta_t *sta)
 {
-    int i,j,n;
+    int i,j,n,k;
     char *efiles[MAXEXFILE]={0};
     
     trace(3,"readdcb : file=%s\n",file);
     
-    for (i=0;i<MAXSAT;i++) for (j=0;j<3;j++) {
-        nav->cbias[i][j]=0.0;
+    for (i=0;i<MAXSAT;i++) for (j=0;j<3;j++) for (k = 0; k < MAX_CODE_BIASES; k++) {
+        nav->cbias[i][j][k] = 0.0;
     }
     for (i=0;i<MAXEXFILE;i++) {
         if (!(efiles[i]=(char *)malloc(1024))) {
@@ -409,7 +447,7 @@ extern int readdcb(const char *file, nav_t *nav, const sta_t *sta)
     n=expath(file,efiles,MAXEXFILE);
     
     for (i=0;i<n;i++) {
-        readdcbf(efiles[i],nav,sta);
+        readdcbf(efiles[i],nav,sta);//读取dcb文件
     }
     for (i=0;i<MAXEXFILE;i++) free(efiles[i]);
     

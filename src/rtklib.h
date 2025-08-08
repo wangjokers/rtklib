@@ -267,6 +267,8 @@ extern "C" {
 #define MAXLEAPS    64                  /* max number of leap seconds table */
 #define MAXGISLAYER 32                  /* max number of GIS data layers */
 #define MAXRCVCMD   4096                /* max length of receiver commands */
+#define MAX_CODE_BIASES 3               /* max # of different code biases per freq */
+#define MAX_CODE_BIAS_FREQS 2           /* max # of freqs supported for code biases  */
 
 #define RNX2VER     2.10                /* RINEX ver.2 default output version */
 #define RNX3VER     3.00                /* RINEX ver.3 default output version */
@@ -816,7 +818,7 @@ typedef struct {        /* navigation data type */
     double ion_cmp[8];  /* BeiDou iono model parameters {a0,a1,a2,a3,b0,b1,b2,b3} */
     double ion_irn[8];  /* IRNSS iono model parameters {a0,a1,a2,a3,b0,b1,b2,b3} */
     int glo_fcn[32];    /* GLONASS FCN + 8 */
-    double cbias[MAXSAT][3]; /* satellite DCB (0:P1-P2,1:P1-C1,2:P2-C2) (m) */
+    double cbias[MAXSAT][MAX_CODE_BIAS_FREQS][MAX_CODE_BIASES]; /* satellite DCB (0:P1-P2,1:P1-C1,2:P2-C2) (m)这里的序号排列不太确定？ */
     double rbias[MAXRCV][2][3]; /* receiver DCB (0:P1-P2,1:P1-C1,2:P2-C2) (m) */
     pcv_t pcvs[MAXSAT]; /* satellite antenna pcv */
     sbssat_t sbssat;    /* SBAS satellite corrections */
@@ -1450,7 +1452,7 @@ EXPORT int ionocorr(gtime_t time, const nav_t *nav, int sat, const double *pos,
                     const double *azel, int ionoopt, double *ion, double *var);
 EXPORT int tropcorr(gtime_t time, const nav_t *nav, const double *pos,
                     const double *azel, int tropopt, double *trp, double *var);
-
+EXPORT int seliflc(int optnf, int sys);
 /* antenna models ------------------------------------------------------------*/
 EXPORT int  readpcv(const char *file, pcvs_t *pcvs);
 EXPORT pcv_t *searchpcv(int sat, const char *type, gtime_t time,
@@ -1527,6 +1529,9 @@ EXPORT void readsp3(const char *file, nav_t *nav, int opt);
 EXPORT int  readsap(const char *file, gtime_t time, nav_t *nav);
 EXPORT int  readdcb(const char *file, nav_t *nav, const sta_t *sta);
 EXPORT int  readfcb(const char *file, nav_t *nav);
+EXPORT int code2bias_ix(const int sys, const int code);
+
+
 EXPORT void alm2pos(gtime_t time, const alm_t *alm, double *rs, double *dts);
 
 EXPORT int tle_read(const char *file, tle_t *tle);

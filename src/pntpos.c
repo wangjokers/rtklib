@@ -50,7 +50,7 @@ static double varerr(const prcopt_t *opt, double el, int sys)
     double fact,varr;
     fact=sys==SYS_GLO?EFACT_GLO:(sys==SYS_SBS?EFACT_SBS:EFACT_GPS);
     if (el<MIN_EL) el=MIN_EL;
-    varr=SQR(opt->err[0])*(SQR(opt->err[1])+SQR(opt->err[2])/sin(el));
+    varr=SQR(opt->err[0])*(SQR(opt->err[1])+SQR(opt->err[2])/sin(el));//详细见手册2.4.2P160详细部分
     if (opt->ionoopt==IONOOPT_IFLC) varr*=SQR(3.0); /* iono-free */
     return SQR(fact)*varr;
 }
@@ -63,7 +63,7 @@ static double gettgd(int sat, const nav_t *nav, int type)
         for (i=0;i<nav->ng;i++) {
             if (nav->geph[i].sat==sat) break;
         }
-        return (i>=nav->ng)?0.0:-nav->geph[i].dtaun*CLIGHT;
+        return (i>=nav->ng)?0.0:-nav->geph[i].dtaun*CLIGHT; 
     }
     else {
         for (i=0;i<nav->n;i++) {
@@ -91,21 +91,39 @@ static double prange(const obsd_t *obs, const nav_t *nav, const prcopt_t *opt,
                                                 gamma: 频率比值，通常用于双频或多频修正。
                                                 b1, b2: 存储时钟差（TGD），用于修正伪距。
                                                 sat, sys: 分别代表卫星编号和卫星系统类型。*/
-    int sat,sys;
+    int sat,sys, f2,bias_ix;
     
     sat=obs->sat;           // 获取卫星编号
     sys=satsys(sat,NULL);   // 获取卫星系统（GPS, GLONASS, Galileo等）
     P1=obs->P[0];           // 获取伪距 P1
-    P2=obs->P[1];           // 获取伪距 P2
+    f2 = seliflc(opt->nf, satsys(obs->sat, NULL));
+    P2 = obs->P[f2];
+    //P2=obs->P[1];           // 获取伪距 P2
     *var=0.0;               // 初始化误差值为0
     
     if (P1==0.0||(opt->ionoopt==IONOOPT_IFLC&&P2==0.0)) return 0.0; // 如果 P1 或者 采用双频方法但是P2 无效，则返回0
     
-    /* P1-C1,P2-C2 DCB correction */
-    if (sys==SYS_GPS||sys==SYS_GLO) {
-        if (obs->code[0]==CODE_L1C) P1+=nav->cbias[sat-1][1]; /* C1->P1 */// 修正 C1 -> P1
-        if (obs->code[1]==CODE_L2C) P2+=nav->cbias[sat-1][2]; /* C2->P2 */// 修正 C2 -> P2
-    }
+    ///* P1-C1,P2-C2 DCB correction */
+    //if (sys==SYS_GPS||sys==SYS_GLO) {
+    //    if (obs->code[0]==CODE_L1C) P1+=nav->cbias[sat-1][1]; /* C1->P1 */// 修正 C1 -> P1
+    //    if (obs->code[1]==CODE_L2C) P2+=nav->cbias[sat-1][2]; /* C2->P2 */// 修正 C2 -> P2
+    //}
+     bias_ix = code2bias_ix(sys, obs->code[0]);
+     if (bias_ix > 0) { /* 0=ref code */
+         P1 += nav->cbias[sat - 1][0][bias_ix - 1];
+     }
+     /* GPS code biases are L1/L2, Galileo are L1/L5 */
+     if (sys == SYS_GAL && f2 == 1) {
+         /* skip code bias, no GAL L2 bias available */
+     }
+     else {  /* apply L2 or L5 code bias */
+         bias_ix = code2bias_ix(sys, obs->code[f2]);
+         if (bias_ix > 0) { /* 0=ref code */
+             P2 += nav->cbias[sat - 1][1][bias_ix - 1]; /* L2 or L5 code bias */
+         }
+     }
+
+
     if (opt->ionoopt==IONOOPT_IFLC) { /* dual-frequency */// 如果采用双频修正（IFLC：双频伪距修正）
         
         if (sys==SYS_GPS||sys==SYS_QZS) { /* L1-L2,G1-G2 */
@@ -124,7 +142,7 @@ static double prange(const obsd_t *obs, const nav_t *nav, const prcopt_t *opt,
             return (P2-gamma*P1)/(1.0-gamma);
         }
         else if (sys==SYS_CMP) { /* B1-B2 */
-            gamma=SQR(((obs->code[0]==CODE_L2I)?FREQ1_CMP:FREQ1)/FREQ2_CMP);
+            gamma=SQR(((obs->code[0]==CODE_L2I)?FREQ1_CMP:FREQ1)/FREQ2_CMP);//详细见word里面的DCB改正部分
             if      (obs->code[0]==CODE_L2I) b1=gettgd(sat,nav,0); /* TGD_B1I*/
             else if (obs->code[0]==CODE_L1P) b1=gettgd(sat,nav,2); /* TGD_B1Cp */
             else b1=gettgd(sat,nav,2)+gettgd(sat,nav,4); /* TGD_B1Cp+ISC_B1Cd */
@@ -334,7 +352,7 @@ static int rescode(int iter, const obsd_t *obs, int n, const double *rs,
     for (i=0;i<3;i++) rr[i]=x[i];//获取接收机位置 ， rr{x,y,z}->pos{lat,lon,h}  
     dtr=x[3];//获取接收机钟差
     
-    ecef2pos(rr,pos);// 将ECEF坐标转换为地理坐标
+    ecef2pos(rr,pos);// 将ECEF坐标转换为地理坐标（BLH)
     
     for (i=*ns=0;i<n&&i<MAXOBS;i++) {
         vsat[i]=0; azel[i*2]=azel[1+i*2]=resp[i]=0.0;// 将vsat、azel和resp数组置 0，因为在前后两次定位结果中，每颗卫星的上述信息都会发生变化。
