@@ -61,6 +61,41 @@
 
 /* table to translate code to code bias table index  */
 static int8_t code_bias_ix[MAX_BIAS_SYS][MAXCODE];
+/* initialize code bias lookup table -------------------------------------------
+*       -1 = code not supported
+*        0 = reference code (0 bias)
+*        1-3 = table index for code
+* ----------------------------------------------------------------------------*/
+static void init_bias_ix(void) {
+    int i, j;
+
+    for (i = 0; i < MAX_BIAS_SYS; i++) for (j = 0; j < MAXCODE; j++)
+        code_bias_ix[i][j] = -1;
+
+    /* GPS */
+    code_bias_ix[0][CODE_L1W] = 0;
+    code_bias_ix[0][CODE_L1C] = 1;
+    code_bias_ix[0][CODE_L1L] = 2;
+    code_bias_ix[0][CODE_L1X] = 3;
+    code_bias_ix[0][CODE_L2W] = 0;
+    code_bias_ix[0][CODE_L2L] = 1;
+    code_bias_ix[0][CODE_L2S] = 2;
+    code_bias_ix[0][CODE_L2X] = 3;
+    /* GLONASS */
+    code_bias_ix[1][CODE_L1P] = 0;
+    code_bias_ix[1][CODE_L1C] = 1;
+    code_bias_ix[1][CODE_L2P] = 0;
+    code_bias_ix[1][CODE_L2C] = 1;
+    /* Galileo */
+    code_bias_ix[2][CODE_L1C] = 0;
+    code_bias_ix[2][CODE_L1X] = 1;
+    code_bias_ix[2][CODE_L5Q] = 0;
+    code_bias_ix[2][CODE_L5I] = 1;
+    code_bias_ix[2][CODE_L5X] = 2;
+    /* Beidou */
+    code_bias_ix[3][CODE_L2I] = 0;
+    code_bias_ix[3][CODE_L6I] = 0;
+}
 
 
 /* satellite code to satellite system ----------------------------------------*/
@@ -387,6 +422,96 @@ static int readdcbf(const char *file, nav_t *nav, const sta_t *sta)
     return 1;
 }
 
+extern int readdcb(const char* file, nav_t* nav, const sta_t* sta)
+{
+    int i, j, k, n, dcb_ok = 0;
+    char* efiles[MAXEXFILE] = { 0 };
+
+    trace(3, "readdcb : file=%s\n", file);
+
+    init_bias_ix(); /* init translation table from code to table column */
+
+    for (i = 0; i < MAXSAT; i++) for (j = 0; j < MAX_CODE_BIAS_FREQS; j++) for (k = 0; k < MAX_CODE_BIASES; k++) {
+        nav->cbias[i][j][k] = 0.0;
+    }
+    for (i = 0; i < MAXEXFILE; i++) {
+        if (!(efiles[i] = (char*)malloc(1024))) {
+            for (i--; i >= 0; i--) free(efiles[i]);
+            return 0;
+        }
+    }
+    n = expath(file, efiles, MAXEXFILE);
+
+    for (i = 0; i < n; i++) {
+        if (strstr(efiles[i], ".BIA") || strstr(efiles[i], ".bia") ||
+            strstr(efiles[i], ".BSX") || strstr(efiles[i], ".bsx"))
+            dcb_ok = readbiaf(efiles[i], nav);
+        else if (strstr(efiles[i], ".DCB") || strstr(efiles[i], ".dcb"))
+            dcb_ok = readdcbf(efiles[i], nav, sta);
+    }
+    for (i = 0; i < MAXEXFILE; i++) free(efiles[i]);
+
+    return dcb_ok;
+}
+/* read DCB parameters from BIA or BSX file ------------------------------------
+*    - supports satellite code biases only
+*-----------------------------------------------------------------------------*/
+static int readbiaf(const char* file, nav_t* nav)
+{
+    FILE* fp;
+    double cbias;
+    char buff[256], bias[6] = "", svn[6] = "", prn[6] = "", obs1[6] = "", obs2[6];
+    int i, sat, freq, code1, code2, bias_ix1, bias_ix2, sys;
+
+    trace(3, "readbiaf: file=%s\n", file);
+
+    if (!(fp = fopen(file, "r"))) {
+        trace(2, "dcb parameters file open error: %s\n", file);
+        return 0;
+    }
+    while (fgets(buff, sizeof(buff), fp)) {
+        if (sscanf(buff, "%4s %5s %4s %4s %4s", bias, svn, prn, obs1, obs2) < 5) continue;
+        if (obs1[0] != 'C') continue;  /* skip phase biases for now */
+        if ((cbias = str2num(buff, 70, 21)) == 0.0) continue;
+        sat = satid2no(prn);
+        sys = satsys(sat, NULL);
+        /* other code biases are L1/L2, Galileo is L1/L5 */
+        if (obs1[1] == '1')
+            freq = 0;
+        else if ((sys != SYS_GAL && obs1[1] == '2') || (sys == SYS_GAL && obs1[1] == '5'))
+            freq = 1;
+        else continue;
+
+        if (!(code1 = obs2code(&obs1[1]))) continue; /* skip if code not valid */
+        bias_ix1 = code2bias_ix(sys, code1);
+        if (strcmp(bias, "OSB") == 0) {
+            /* observed signal bias */
+            if (bias_ix1 == 0) { /* this is ref code */
+                for (i = 0; i < MAX_CODE_BIASES; i++)
+                    /* adjust all other codes by ref code bias */
+                    nav->cbias[sat - 1][freq][i] += cbias * 1E-9 * CLIGHT; /* ns -> m */
+            }
+            else {
+                nav->cbias[sat - 1][freq][bias_ix1 - 1] -= cbias * 1E-9 * CLIGHT; /* ns -> m */
+            }
+        }
+        else if (strcmp(bias, "DSB") == 0) {
+            /* differential signal bias */
+            if (obs1[1] != obs2[1]) continue; /* skip biases between freqs for now */
+            if (!(code2 = obs2code(&obs2[1]))) continue; /* skip if code not valid */
+            bias_ix2 = code2bias_ix(sys, code2);
+            if (bias_ix1 == 0) /* this is ref code */
+                nav->cbias[sat - 1][freq][bias_ix2 - 1] = cbias * 1E-9 * CLIGHT; /* ns -> m */
+            else if (bias_ix2 == 0) /* this is ref code */
+                nav->cbias[sat - 1][freq][bias_ix1 - 1] = -cbias * 1E-9 * CLIGHT; /* ns -> m */
+        }
+
+    }
+    fclose(fp);
+
+    return 1;
+}
+
 
 
 /* satellite system to index */
@@ -428,31 +553,32 @@ extern int code2bias_ix(int sys, int code) {
 * return : status (1:ok,0:error)
 * notes  : currently only support P1-P2, P1-C1, P2-C2, bias in DCB file
 *-----------------------------------------------------------------------------*/
-extern int readdcb(const char *file, nav_t *nav, const sta_t *sta)
-{
-    int i,j,n,k;
-    char *efiles[MAXEXFILE]={0};
-    
-    trace(3,"readdcb : file=%s\n",file);
-    
-    for (i=0;i<MAXSAT;i++) for (j=0;j<3;j++) for (k = 0; k < MAX_CODE_BIASES; k++) {
-        nav->cbias[i][j][k] = 0.0;
-    }
-    for (i=0;i<MAXEXFILE;i++) {
-        if (!(efiles[i]=(char *)malloc(1024))) {
-            for (i--;i>=0;i--) free(efiles[i]);
-            return 0;
-        }
-    }
-    n=expath(file,efiles,MAXEXFILE);
-    
-    for (i=0;i<n;i++) {
-        readdcbf(efiles[i],nav,sta);//读取dcb文件
-    }
-    for (i=0;i<MAXEXFILE;i++) free(efiles[i]);
-    
-    return 1;
-}
+//extern int readdcb(const char *file, nav_t *nav, const sta_t *sta)
+//{
+//    int i,j,n,k ;
+//    char *efiles[MAXEXFILE]={0};
+//    
+//    trace(3,"readdcb : file=%s\n",file);
+//    
+//    for (i=0;i<MAXSAT;i++) for (j=0;j<3;j++) for (k = 0; k < MAX_CODE_BIASES; k++) {
+//        nav->cbias[i][j][k] = 0.0;
+//    }
+//    for (i=0;i<MAXEXFILE;i++) {
+//        if (!(efiles[i]=(char *)malloc(1024))) {
+//            for (i--;i>=0;i--) free(efiles[i]);
+//            return 0;
+//        }
+//    }
+//    n=expath(file,efiles,MAXEXFILE);
+//    
+//    for (i=0;i<n;i++) {
+//        readdcbf(efiles[i],nav,sta);//读取dcb文件
+//    }
+//    for (i = 0; i < MAXEXFILE; i++) free(efiles[i]);
+//    for (i=0;i<MAXEXFILE;i++) free(efiles[i]);
+//    
+//    return 1;
+//}
 /* polynomial interpolation by Neville's algorithm ---------------------------*/
 static double interppol(const double *x, double *y, int n)
 {

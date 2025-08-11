@@ -196,7 +196,7 @@ int main(int argc, char **argv)
     infile[1] = "d:\\desktop\\crx\\DCB_text\\BRDM00DLR_S_20240240000_01D_MN.rnx";
     infile[2] = "d:\\desktop\\crx\\DCB_text\\GRG0MGXFIN_20240240000_01D_05M_ORB.SP3";
     infile[3] = "d:\\desktop\\crx\\DCB_text\\GRG0MGXFIN_20240240000_01D_30S_CLK.CLK";
-    outfile = "d:\\desktop\\crx\\DCB_text\\URUM_BDS_3_B1I_B3_DCB_blq.pos";
+    outfile = "d:\\desktop\\crx\\DCB_text\\URUM_BDS_3_B1I_B3_DCB_blq_debug.pos";
     //printf("opening file: [%s]\n", infile[0]);
     //printf("path length  : %zu\n", strlen(infile[0]));
     //用林提供的数据运行发现运行失败，只选中北斗无数据，加了gps发现解算的数据质量不好，中间丢失了大块的时间段

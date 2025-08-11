@@ -393,7 +393,38 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
         }
     }
 
+    //for (i = 0; i < opt->nf; i++) {
+    //    L[i] = P[i] = 0.0;
+    //    /* skip if low SNR or missing observations */
+    //    freq[i] = sat2freq(obs->sat, obs->code[i], nav);
+    //    if (freq[i] == 0.0 || obs->L[i] == 0.0 || obs->P[i] == 0.0) continue;
+    //    if (testsnr(0, 0, azel[1], obs->SNR[i] * SNR_UNIT, &opt->snrmask)) continue;
 
+    //    /* antenna phase center and phase windup correction */
+    //    L[i] = obs->L[i] * CLIGHT / freq[i] - dants[i] - dantr[i] - phw * CLIGHT / freq[i];
+    //    P[i] = obs->P[i] - dants[i] - dantr[i];
+
+    //    if (opt->sateph == EPHOPT_SSRAPC || opt->sateph == EPHOPT_SSRCOM) {
+    //        /* select SSR code correction based on code */
+    //        if (sys == SYS_GPS)
+    //            ix = (i == 0 ? CODE_L1W - 1 : CODE_L2W - 1);
+    //        else if (sys == SYS_GLO)
+    //            ix = (i == 0 ? CODE_L1P - 1 : CODE_L2P - 1);
+    //        else if (sys == SYS_GAL)
+    //            ix = (i == 0 ? CODE_L1X - 1 : CODE_L7X - 1);
+    //        /* apply SSR correction */
+    //        P[i] += (nav->ssr[obs->sat - 1].cbias[obs->code[i] - 1] - nav->ssr[obs->sat - 1].cbias[ix]);
+    //    }
+    //    else {   /* apply code bias corrections from file */
+    //        if (sys == SYS_GAL && (i == 1 || i == 2)) frq = 3 - i;  /* GAL biases are L1/L5 */
+    //        else frq = i;  /* other biases are L1/L2 */
+    //        if (frq >= MAX_CODE_BIAS_FREQS) continue;  /* only 2 freqs per system supported in code bias table */
+    //        bias_ix = code2bias_ix(sys, obs->code[i]); /* look up bias index in table */
+    //        if (bias_ix > 0) {  /*  0=ref code */
+    //            P[i] += nav->cbias[obs->sat - 1][frq][bias_ix - 1]; /* code bias */
+    //        }
+    //    }
+    //}
  /*  强制让第三个频点的值到第二个频点，解决第二个频点载波和伪距为0的问题。 if(freq[1]==0.0)
     {
         freq[1] = freq[2];
