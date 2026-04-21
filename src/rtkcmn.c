@@ -668,8 +668,8 @@ static int code2freq_BDS(uint8_t code, double *freq)
     char *obs=code2obs(code);//又索引确定观测值的类型
     
     switch (obs[0]) {//此处的返回值并非去区分不同的信号，是用于排优先级
-        case '1': *freq=FREQ1;     return 9; /* B1C */
-        case '2': *freq=FREQ1_CMP; return 0; /* B1I */
+        case '1': *freq=FREQ1;     return 0; /* B1C */
+        case '2': *freq=FREQ1_CMP; return 9; /* B1I */
         case '7': *freq=FREQ2_CMP; return 9; /* B2I/B2b */
         case '5': *freq=FREQ5;     return 1; /* B2a */
         case '6': *freq=FREQ3_CMP; return 9; /* B3 */
@@ -1162,7 +1162,7 @@ extern void matmul(const char *tr, int n, int k, int m, double alpha,
 {
     double d;
     int i,j,x,f=tr[0]=='N'?(tr[1]=='N'?1:2):(tr[1]=='N'?3:4);
-    
+    //两个矩阵相乘，有三层的for循环，n,k,m分别对应3层循环
     for (i=0;i<n;i++) for (j=0;j<k;j++) {
         d=0.0;
         switch (f) {
@@ -1263,7 +1263,7 @@ extern int solve(const char *tr, const double *A, const double *Y, int n,
 *          double *x        O   estmated parameters (n x 1)
 *          double *Q        O   esimated parameters covariance matrix (n x n)
 * return : status (0:ok,0>:error)
-* notes  : for weighted least square, replace A and y by A*w and w*y (w=W^(1/2))
+* notes  : for weighted least square, replace A and y by A*w and w*y (w=W^(1/2))重点
 *          matirix stored by column-major order (fortran convention)
 *-----------------------------------------------------------------------------*/
 extern int lsq(const double *A, const double *y, int n, int m, double *x,
@@ -1274,7 +1274,7 @@ extern int lsq(const double *A, const double *y, int n, int m, double *x,
     
     if (m<n) return -1;
     Ay=mat(n,1);
-    matmul("NN",n,1,m,1.0,A,y,0.0,Ay); /* Ay=A*y */
+    matmul("NN",n,1,m,1.0,A,y,0.0,Ay); /* Ay=A*y   Ay=  A*w*w*y=APY           */
     matmul("NT",n,n,m,1.0,A,A,0.0,Q);  /* Q=A*A' */
     if (!(info=matinv(Q,n))) //求逆
         matmul("NN",n,1,n,1.0,Q,Ay,0.0,x); /* x=Q^-1*Ay */
@@ -1305,15 +1305,15 @@ static int filter_(const double *x, const double *P, const double *H,
     double *F=mat(n,m),*Q=mat(m,m),*K=mat(n,m),*I=eye(n);
     int info;
     
-    matcpy(Q,R,m,m);
-    matcpy(xp,x,n,1);
-    matmul("NN",n,m,n,1.0,P,H,0.0,F);       /* Q=H'*P*H+R */
+    matcpy(Q,R,m,m);//Q = R
+    matcpy(xp,x,n,1);//x
+    matmul("NN",n,m,n,1.0,P,H,0.0,F);       /*F=PH     Q=H'*P*H+R K增益的分母部分*/
     matmul("TN",m,m,n,1.0,H,F,1.0,Q);
-    if (!(info=matinv(Q,m))) {
-        matmul("NN",n,m,m,1.0,F,Q,0.0,K);   /* K=P*H*Q^-1 */
-        matmul("NN",n,1,m,1.0,K,v,1.0,xp);  /* xp=x+K*v */
-        matmul("NT",n,n,m,-1.0,K,H,1.0,I);  /* Pp=(I-K*H')*P */
-        matmul("NN",n,n,n,1.0,I,P,0.0,Pp);
+    if (!(info=matinv(Q,m))) {              //求逆Q = inv(Q)
+        matmul("NN",n,m,m,1.0,F,Q,0.0,K);   /* K=P*H*Q^-1        K = F*Q =P*H*inv(Q)KF增益*/
+        matmul("NN",n,1,m,1.0,K,v,1.0,xp);  /* xp=x+K*v   xp = 1*K*v+xp(x),更新x阵*/
+        matmul("NT",n,n,m,-1.0,K,H,1.0,I);  //I=-K*H'+I=I-K*H'
+        matmul("NN",n,n,n,1.0,I,P,0.0,Pp);  /* Pp=(I-K*H')*P      更新P阵*/
     }
     free(F); free(Q); free(K); free(I);
     return info;
@@ -1331,11 +1331,58 @@ extern int filter(double *x, double *P, const double *H, const double *v,
         for (j=0;j<k;j++) P_[i+j*k]=P[ix[i]+ix[j]*n];
         for (j=0;j<m;j++) H_[i+j*k]=H[ix[i]+j*n];
     }
+
+    ///* ========== Reduced Matrices ========== */
+    //trace(3, "\n========== Reduced Matrices ==========\n");
+
+    //// Print complete reduced state vector
+    //trace(3, "Reduced state vector x_=\n");
+    //tracemat(3, x_, 1, k, 13, 4);
+
+    //// Print complete reduced covariance matrix
+    //trace(3, "Reduced covariance matrix P_=\n");
+    //tracemat(3, P_, k, k, 13, 4);
+
+    //// Print complete reduced design matrix
+    //trace(3, "Reduced design matrix H_=\n");
+    //tracemat(3, H_, k, m, 13, 4);
+
+    //// Print observation noise matrix (unchanged)
+    //trace(3, "Observation noise matrix R=\n");
+    //tracemat(3, R, m, m, 13, 4);
+
+    //// Print observation vector (unchanged)
+    //trace(3, "Observation vector v=\n");
+    //tracemat(3, v, 1, m, 13, 4);
+
+    //trace(3, "=====================================\n");
+    ///* ========== Reduced Matrices End ========== */
+
     info=filter_(x_,P_,H_,v,R,k,m,xp_,Pp_);//去0后真正的EKF计算
+
+    ///* ========== Kalman Update Results (Reduced) ========== */
+    //trace(3, "Updated reduced state xp_=\n");
+    //tracemat(3, xp_, 1, k, 13, 4);
+    //trace(3, "Updated reduced covariance Pp_=\n");
+    //tracemat(3, Pp_, k, k, 13, 4);
+
+
+
+
+
     for (i=0;i<k;i++) {
         x[ix[i]]=xp_[i];//更新x阵
         for (j=0;j<k;j++) P[ix[i]+ix[j]*n]=Pp_[i+j*k];
     }
+    /* ========== Kalman Update Results (Full) ========== */
+    //trace(3, "Updated full state x=\n");
+    //tracemat(3, x, 1, n, 13, 4);
+    //trace(3, "Updated full covariance P=\n");
+    //tracemat(3, P, n, n, 13, 4);
+
+
+
+
     free(ix); free(x_); free(xp_); free(P_); free(Pp_); free(H_);
     return info;
 }
@@ -2354,68 +2401,125 @@ static int readngspcv(const char *file, pcvs_t *pcvs)
     
     return 1;
 }
-/* read antex file ----------------------------------------------------------*/
+/* read antex file ----------------------------------------------------------
+* 读取ANTEX格式的天线参数文件（包含卫星和接收机天线的PCO/PCV参数）
+* args   : const char *file    I   天线文件路径（.atx格式）
+*          pcvs_t *pcvs        O   天线参数集合（存储所有读取的天线参数）
+* return : int                     1=成功，0=失败
+* notes  : 同时读取卫星天线和接收机天线参数
+*          通过pcv.sat区分：sat!=0为卫星，sat==0为接收机
+*          freqs[]={1,2,5,0}限制了只能读取频率1、2、5的数据
+*          这导致北斗C06、C07等频率无法被读取
+*-----------------------------------------------------------------------------*/
 static int readantex(const char *file, pcvs_t *pcvs)
 {
     FILE *fp;
-    static const pcv_t pcv0={0};
-    pcv_t pcv;
-    double neu[3];
-    int i,f,freq=0,state=0,freqs[]={1,2,5,0};
-    char buff[256];
+    static const pcv_t pcv0={0};  // 空的天线参数模板，用于初始化
+    pcv_t pcv;                    // 当前正在读取的天线参数
+    double neu[3];                // 临时存储NEU或XYZ坐标值
+    int i,f,freq=0,state=0,freqs[]={1,2,5,0};  // freqs定义支持的频率：1,2,5
+    char buff[256];               // 行读取缓冲区
     
     trace(3,"readantex: file=%s\n",file);
     
+    // 打开天线文件
     if (!(fp=fopen(file,"r"))) {
         trace(2,"antex pcv file open error: %s\n",file);
         return 0;
     }
+    
+    // 逐行读取文件
     while (fgets(buff,sizeof(buff),fp)) {
         
+        // 跳过短行（<60字符）和注释行
         if (strlen(buff)<60||strstr(buff+60,"COMMENT")) continue;
         
+        // 检测天线块开始标志
         if (strstr(buff+60,"START OF ANTENNA")) {
-            pcv=pcv0;
-            state=1;
+            pcv=pcv0;  // 重置天线参数为空
+            state=1;   // 设置状态：正在读取天线块
         }
+        // 检测天线块结束标志
         if (strstr(buff+60,"END OF ANTENNA")) {
-            addpcv(&pcv,pcvs);
-            state=0;
+            // 四级日志：记录添加到集合的天线参数
+            if (!pcv.sat) tracet(4,"readantex: adding rec ant type='%s' code='%s' off[0]=[%.3f %.3f %.3f] off[2]=[%.3f %.3f %.3f]\n",
+                pcv.type,pcv.code,
+                pcv.off[0][0],pcv.off[0][1],pcv.off[0][2],
+                pcv.off[2][0],pcv.off[2][1],pcv.off[2][2]);
+            addpcv(&pcv,pcvs);  // 将读取完成的天线参数添加到集合中
+            state=0;            // 重置状态：不在天线块中
         }
+        // 如果不在天线块中，跳过当前行
         if (!state) continue;
         
+        // 读取天线类型和代码（例如：BEIDOU-2G C01）
         if (strstr(buff+60,"TYPE / SERIAL NO")) {
-            strncpy(pcv.type,buff   ,20); pcv.type[20]='\0';
-            strncpy(pcv.code,buff+20,20); pcv.code[20]='\0';
+            strncpy(pcv.type,buff   ,20); pcv.type[20]='\0';  // 天线类型（前20字符）
+            strncpy(pcv.code,buff+20,20); pcv.code[20]='\0';  // 天线代码（20-40字符）
+            // 判断是否为卫星天线（code的第4-11字符为空格）
             if (!strncmp(pcv.code+3,"        ",8)) {
-                pcv.sat=satid2no(pcv.code);
+                pcv.sat=satid2no(pcv.code);  // 转换卫星代码为卫星编号（如C01->96）
             }
+            // 否则pcv.sat=0，表示接收机天线
         }
+        // 读取参数有效开始时间
         else if (strstr(buff+60,"VALID FROM")) {
             if (!str2time(buff,0,43,&pcv.ts)) continue;
         }
+        // 读取参数有效结束时间
         else if (strstr(buff+60,"VALID UNTIL")) {
             if (!str2time(buff,0,43,&pcv.te)) continue;
         }
+        // 读取频率块开始标志（例如：C01 START OF FREQUENCY）
         else if (strstr(buff+60,"START OF FREQUENCY")) {
+            // 接收机天线：只读取GPS频率（buff[3]=='G'）
+            // 卫星天线：读取所有频率
             if (!pcv.sat&&buff[3]!='G') continue; /* only read rec ant for GPS */
+           /* if (!pcv.sat&&buff[3]!='C') continue; /* only read rec ant for BDS */
+            // 从buff+4位置解析频率数字（如"C01"中的"01"->1）
             if (sscanf(buff+4,"%d",&f)<1) continue;
+            
+            // 在freqs数组中查找该频率是否被支持
             for (i=0;freqs[i];i++) if (freqs[i]==f) break;
-            if (freqs[i]) freq=i+1;
+            
+            // 如果找到，设置当前频率索引（freq=1表示写入off[0]）
+            if (freqs[i]) {
+                freq=i+1;
+                // 四级日志：验证读取北斗接收机天线频率（只输出到trace文件）
+                if (!pcv.sat) tracet(4,"readantex: BDS rec ant freq=%d -> off[%d]\n",f,freq-1);
+            }
+            // 如果未找到（如f=6或f=7），freq保持不变或为0，导致该频率被跳过
         }
+        // 读取频率块结束标志
         else if (strstr(buff+60,"END OF FREQUENCY")) {
-            freq=0;
+            freq=0;  // 重置频率索引
         }
+        // 读取PCO参数（相位中心偏移）
         else if (strstr(buff+60,"NORTH / EAST / UP")) {
+            // 检查频率索引有效性
             if (freq<1||NFREQ<freq) continue;
+            
+            // 解析3个坐标值（NEU或XYZ，单位：毫米）
             if (decodef(buff,3,neu)<3) continue;
-            pcv.off[freq-1][0]=neu[pcv.sat?0:1]; /* x or e */
-            pcv.off[freq-1][1]=neu[pcv.sat?1:0]; /* y or n */
-            pcv.off[freq-1][2]=neu[2];           /* z or u */
+            
+            // 根据天线类型选择坐标系
+            // 卫星天线(pcv.sat!=0)：使用XYZ坐标系
+            // 接收机天线(pcv.sat==0)：使用ENU坐标系（东北天）
+            pcv.off[freq-1][0]=neu[pcv.sat?0:1]; /* 卫星:x坐标, 接收机:e(东)坐标 */
+            pcv.off[freq-1][1]=neu[pcv.sat?1:0]; /* 卫星:y坐标, 接收机:n(北)坐标 */
+            pcv.off[freq-1][2]=neu[2];           /* 卫星:z坐标, 接收机:u(天)坐标 */
+            
+            // 注意：neu值会从毫米自动转换为米（在decodef函数中处理）
         }
+        // 读取PCV参数（相位中心变化，随天顶角/仰角变化）
         else if (strstr(buff,"NOAZI")) {
+            // 检查频率索引有效性
             if (freq<1||NFREQ<freq) continue;
+            
+            // 解析最多19个角度点的PCV值（每5度一个点：0°,5°,10°,...,90°）
             if ((i=decodef(buff+8,19,pcv.var[freq-1]))<=0) continue;
+            
+            // 如果实际读取的点数<19，用最后一个值填充剩余点
             for (;i<19;i++) pcv.var[freq-1][i]=pcv.var[freq-1][i-1];
         }
     }
@@ -2592,7 +2696,10 @@ extern int readblq(const char *file, const char *sta, double *odisp)
         
         if (sscanf(buff+2,"%16s",name)<1) continue;
         for (p=name;(*p=(char)toupper((int)(*p)));p++) ;
-        if (strcmp(name,staname)) continue;
+
+
+        if (strcmp(name,staname,4)) // warn;station name is 4-char
+                continue;
         
         /* read blq record */
         if (readblqrecord(fp,odisp)) {
@@ -3550,11 +3657,11 @@ extern double geodist(const double *rs, const double *rr, double *e)
     double r;
     int i;
     
-    if (norm(rs,3)<RE_WGS84) return -1.0;
-    for (i=0;i<3;i++) e[i]=rs[i]-rr[i];
-    r=norm(e,3);
-    for (i=0;i<3;i++) e[i]/=r;
-    return r+OMGE*(rs[0]*rr[1]-rs[1]*rr[0])/CLIGHT;
+    if (norm(rs,3)<RE_WGS84) return -1.0;//检查卫星到WGS84坐标系原点的距离是否大于基准椭球体的长半径
+    for (i=0;i<3;i++) e[i]=rs[i]-rr[i];//这里是卫星减去接收机，在后面要注意方向
+    r=norm(e,3);                       //三范数表示三维空间勾股定理，即卫地距
+    for (i=0;i<3;i++) e[i]/=r;		  //方向余弦向量
+    return r+OMGE*(rs[0]*rr[1]-rs[1]*rr[0])/CLIGHT; //考虑地球自转的影响
 }
 /* satellite azimuth/elevation angle -------------------------------------------
 * compute satellite azimuth/elevation angle
@@ -3847,7 +3954,7 @@ static double interpvar(double ang, const double *var)
 * compute antenna offset by antenna phase center parameters
 * args   : pcv_t *pcv       I   antenna phase center parameters
 *          double *del      I   antenna delta {e,n,u} (m)   相对天线参考点偏移值
-*          double *azel     I   azimuth/elevation for receiver {az,el} (rad)
+*          double *azel     I   azimuth/elevation for receiver {az,el} (rad)，方位角和仰角，0存储方位角，1存储仰角
 *          int     opt      I   option (0:only offset,1:offset+pcv)
 *          double *dant     O   range offsets for each frequency (m)
 * return : none
@@ -3860,16 +3967,22 @@ extern void antmodel(const pcv_t *pcv, const double *del, const double *azel,
     int i,j;
     
     trace(4,"antmodel: azel=%6.1f %4.1f opt=%d\n",azel[0]*R2D,azel[1]*R2D,opt);
-    
+
+    if (!pcv) {
+        tracet(1,"antmodel: ERROR pcv is NULL!\n");
+        return;
+    }
     e[0]=sin(azel[0])*cosel;
     e[1]=cos(azel[0])*cosel;//azel 0 和 1 分别代表方位角和俯仰角
     e[2]=sin(azel[1]);
     
     for (i=0;i<NFREQ;i++) {
-        for (j=0;j<3;j++) off[j]=pcv->off[i][j]+del[j];
-        
-        dant[i]=-dot(off,e,3)+(opt?interpvar(90.0-azel[1]*R2D,pcv->var[i]):0.0);
+        for (j=0;j<3;j++) off[j]=pcv->off[i][j]+del[j];//PCO修正
+        dant[i]=-dot(off,e,3)+(opt?interpvar(90.0-azel[1]*R2D,pcv->var[i]):0.0);//将PCO向量投影到卫星方向，并加上PCV修正
     }
+    // 一级日志：验证接收机天线修正计算（只输出到trace文件）
+    tracet(5,"antmodel: opt=%d dant=[%.6f %.6f %.6f] (PCO+PCV)\n",
+        opt, dant[0], dant[1], dant[2]);
     trace(5,"antmodel: dant=%6.3f %6.3f\n",dant[0],dant[1]);
 }
 /* satellite antenna model ------------------------------------------------------
@@ -3878,6 +3991,8 @@ extern void antmodel(const pcv_t *pcv, const double *del, const double *azel,
 *          double nadir     I   nadir angle for satellite (rad)
 *          double *dant     O   range offsets for each frequency (m)
 * return : none
+* notes  : 基于天底角插值计算PCV修正值
+*          PCV数据每5度一个点，需要进行插值计算
 *-----------------------------------------------------------------------------*/
 extern void antmodel_s(const pcv_t *pcv, double nadir, double *dant)
 {
@@ -3888,6 +4003,9 @@ extern void antmodel_s(const pcv_t *pcv, double nadir, double *dant)
     for (i=0;i<NFREQ;i++) {
         dant[i]=interpvar(nadir*R2D*5.0,pcv->var[i]);
     }
+    // 四级日志：验证卫星PCV数据
+    tracet(4,"antmodel_s: type=%s nadir=%.1f var[0][0]=%.3f var[2][0]=%.3f dant=[%.6f %.6f %.6f]\n",
+        pcv->type,nadir*R2D,pcv->var[0][0],pcv->var[2][0],dant[0],dant[1],dant[2]);
     trace(5,"antmodel_s: dant=%6.3f %6.3f\n",dant[0],dant[1]);
 }
 /* sun and moon position in eci (ref [4] 5.1.1, 5.2.1) -----------------------*/

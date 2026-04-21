@@ -591,7 +591,7 @@ int *svh: 输出参数，存储卫星健康状态。*/
 static int satpos_sbas(gtime_t time, gtime_t teph, int sat, const nav_t *nav,
                         double *rs, double *dts, double *var, int *svh)
 {
-    const sbssatp_t *sbs;
+    const sbssatp_t *sbs=NULL;
     int i;
     
     trace(4,"satpos_sbas: time=%s sat=%2d\n",time_str(time,3),sat);
@@ -647,15 +647,15 @@ static int satpos_ssr(gtime_t time, gtime_t teph, int sat, const nav_t *nav,
     }
     //截止时间一样是属于同一套的时候进行结算
 
+    //时间差计算
 
-
-    t1=timediff(time,ssr->t0[0]);
-    t2=timediff(time,ssr->t0[1]);
-    t3=timediff(time,ssr->t0[2]);
+    t1=timediff(time,ssr->t0[0]);//轨道改正时间差
+    t2=timediff(time,ssr->t0[1]);//钟差改正时间差
+    t3=timediff(time,ssr->t0[2]);//高频钟差改正时间差
     //分别代表不同的一次项，time代表当前发射时刻的时间，
 
 
-    /* ssr orbit and clock correction (ref [4])数据超期检查 */
+    /* ssr orbit and clock correction (ref [4])数据超期检查通常为90s */
     if (fabs(t1)>MAXAGESSR||fabs(t2)>MAXAGESSR) {
         trace(2,"age of ssr error: %s sat=%2d t=%.0f %.0f\n",time_str(time,0),
               sat,t1,t2);
@@ -668,10 +668,10 @@ static int satpos_ssr(gtime_t time, gtime_t teph, int sat, const nav_t *nav,
     for (i=0;i<3;i++) deph[i]=ssr->deph[i]+ssr->ddeph[i]*t1;//轨道修正
     dclk=ssr->dclk[0]+ssr->dclk[1]*t2+ssr->dclk[2]*t2*t2;   //钟差修正，加了一个加速度二次线插值
     
-    /* ssr highrate clock correction (ref [4]) */
+    /* ssr highrate clock correction (ref [4])高频钟差改正， */
     if (ssr->iod[0]==ssr->iod[2]&&ssr->t0[2].time&&fabs(t3)<MAXAGESSR_HRCLK) {
         dclk+=ssr->hrclk;
-    }
+    }//这里的10m似乎也不太稳健。
     if (norm(deph,3)>MAXECORSSR||fabs(dclk)>MAXCCORSSR) {
         trace(3,"invalid ssr correction: %s deph=%.1f dclk=%.1f\n",
               time_str(time,0),norm(deph,3),dclk);
@@ -724,7 +724,7 @@ static int satpos_ssr(gtime_t time, gtime_t teph, int sat, const nav_t *nav,
     /* variance by ssr ura */
     *var=var_urassr(ssr->ura);
     //URA 表示误差范围，转换为方差。
-    //实现：var_urassr 根据 SSR 的精度指标计算。
+    //实现：var_urassr 根据 SSR 的精度指标计算。sssr里面会提供这个URA。
     trace(5,"satpos_ssr: %s sat=%2d deph=%6.3f %6.3f %6.3f er=%6.3f %6.3f %6.3f dclk=%6.3f var=%6.3f\n",
           time_str(time,2),sat,deph[0],deph[1],deph[2],er[0],er[1],er[2],dclk,*var);
     
@@ -807,7 +807,7 @@ extern void satposs(gtime_t teph, const obsd_t *obs, int n, const nav_t *nav,
         for (j=0,pr=0.0;j<NFREQ;j++) if ((pr=obs[i].P[j])!=0.0) break;//遍历各频，寻找非0的可用伪距
         //pr是当前卫星的伪距值，i是卫星，j是频点
        
-
+         
 
         if (j>=NFREQ) {
             trace(3,"no pseudorange %s sat=%2d\n",time_str(obs[i].time,3),obs[i].sat);

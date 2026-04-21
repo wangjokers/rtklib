@@ -100,7 +100,10 @@ static int readsp3h(FILE *fp, gtime_t *time, char *type, int *sats,
             continue;
         }
         else if (!strncmp(buff,"%c",2)) { /* time system */
-            strncpy(tsys,buff+9,3); tsys[3]='\0';
+            if (tsys[0] == '\0') {
+                strncpy(tsys,buff+9,3); tsys[3]='\0';
+            }
+           /* strncpy(tsys,buff+9,3); tsys[3]='\0';*/
         }
         else if (!strncmp(buff,"%f",2)&&bfact[0]==0.0) { /* fp base number */
             bfact[0]=str2num(buff, 3,10);
@@ -158,6 +161,7 @@ static void readsp3b(FILE *fp, char type, int *sats, int ns, double *bfact,
             continue;
         }
         if (!strcmp(tsys,"UTC")) time=utc2gpst(time); /* utc->gpst */
+        else if (!strcmp(tsys,"BDT")) time=bdt2gpst(time); /* bdt->gpst */
         peph.time =time;
         peph.index=index;
         
@@ -636,9 +640,9 @@ extern void satantoff(gtime_t time, const double *rs, int sat, const nav_t *nav,
     
     /* iono-free LC */
     for (i=0;i<3;i++) {
-        dant1=pcv->off[0][0]*ex[i]+pcv->off[0][1]*ey[i]+pcv->off[0][2]*ez[i];
-        dant2=pcv->off[1][0]*ex[i]+pcv->off[1][1]*ey[i]+pcv->off[1][2]*ez[i];
-        dant[i]=C1*dant1+C2*dant2;
+        dant1=pcv->off[0][0]*ex[i]+pcv->off[0][1]*ey[i]+pcv->off[0][2]*ez[i];//第一个频率（B1I）的PCO在卫星坐标系中的投影
+        dant2=pcv->off[1][0]*ex[i]+pcv->off[1][1]*ey[i]+pcv->off[1][2]*ez[i];//第二个频率（B2I）的PCO在卫星坐标系中的投影
+        dant[i]=C1*dant1+C2*dant2;                                           //无电离层组合的PCO修正
     }
 }
 /* satellite position/clock by precise ephemeris/clock -------------------------

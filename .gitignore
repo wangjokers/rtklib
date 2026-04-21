@@ -361,3 +361,28 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+# GNSS数据（重点）
+data/
+data01/
+data02/
+data03_fuxian/
+data04_text/
+
+# 结果文件
+*.pos
+*.trace
+*.log
+
+# GNSS文件
+*.rnx
+*.sp3
+*.clk
+*.snx
+*.bsx
+
+# build
+.vs/
+.vscode/
+x64/
+

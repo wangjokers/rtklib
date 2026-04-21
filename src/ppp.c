@@ -109,7 +109,7 @@
 #define NT(opt)     ((opt)->tropopt<TROPOPT_EST?0:((opt)->tropopt==TROPOPT_EST?1:3))//电离层未知数个数
 #define NI(opt)     ((opt)->ionoopt==IONOOPT_EST?MAXSAT:0)//电离层参数个数，使用LC则=0
 #define ND(opt)     ((opt)->nf>=3?1:0)//接收机DCB未知数个数，非3频为0
-#define NR(opt)     (NP(opt)+NC(opt)+NT(opt)+NI(opt)+ND(opt))//除去模糊度以外，所有需要估计的状态的总共的维度
+#define NR(opt)     (NP(opt)+NC(opt)+NT(opt)+NI(opt)+ND(opt))//除去模糊度以外，所有需要估计的状态的总共的维度，前面五种的总和
 #define NB(opt)     (NF(opt)*MAXSAT)//模糊度个数
 #define NX(opt)     (NR(opt)+NB(opt))//待估参数个数
 #define IC(s,opt)   (NP(opt)+(s))   //接收机钟差在x阵的idx: s的取值如下，0:GPS 1:GLONASS 2:GAL 3:BDS
@@ -321,19 +321,264 @@ static int model_phw(gtime_t time, int sat, const char *type, int opt,
     return 1;
 }
 /* measurement error variance ------------------------------------------------*/
+//static double varerr(int sat, int sys, double el, int idx, int type,
+//                     const prcopt_t *opt)
+//{
+//    double fact=1.0,sinel=sin(el);
+//    
+//    if (type==1) fact*=opt->eratio[idx==0?0:1];
+//    fact*=sys==SYS_GLO?EFACT_GLO:(sys==SYS_SBS?EFACT_SBS:EFACT_GPS);
+//    
+//    if (sys==SYS_GPS||sys==SYS_QZS) {
+//        if (idx==2) fact*=EFACT_GPS_L5; /* GPS/QZS L5 error factor */
+//    }
+//    if (opt->ionoopt==IONOOPT_IFLC) fact*=3.0;///噪声放大三倍
+//    return SQR(fact*opt->err[1])+SQR(fact*opt->err[2]/sinel);
+//}
+
+
+
+/* measurement error variance -----funtion3-------------------------------------------*/
 static double varerr(int sat, int sys, double el, int idx, int type,
-                     const prcopt_t *opt)
+             const prcopt_t* opt)
 {
-    double fact=1.0,sinel=sin(el);
+    double sinel = sin(el);
+    if (sinel < 1E-3) sinel = 1E-3;
+
+    /* 论文 Function_3 参数：伪距 a=0.4,b=0.6；载波 a=0.004,b=0.006 */
+    double a = (type == 1) ? 0.4 : 0.004; /* type 1=code, 0=phase */
+    double b = (type == 1) ? 0.6 : 0.006;
+
+    /* 系统因子沿用 RTKLIB 习惯 */
+    double efact = (sys == SYS_GLO) ? EFACT_GLO : (sys == SYS_SBS ? EFACT_SBS : EFACT_GPS);
+
+    /* 若想维持 IF LC 加权，按原逻辑再乘 3 倍 */
+    double ionofact = (opt->ionoopt == IONOOPT_IFLC) ? 3.0 : 1.0;
+
+    trace(4, "[DBG] varerr sat=%2d sys=%d el=%.1f idx=%d type=%d a=%.3f b=%.3f sinel=%.3f\n",
+        sat, sys, el * R2D, idx, type, a, b, sinel);
+
+    return SQR(ionofact * efact * (a + b / sinel));
+
+}
+
+
+//
+///* measurement error variance -- Function_4: (c + d*exp(-E/E0))^2 */
+//static double varerr(int sat, int sys, double el, int idx, int type,
+//             const prcopt_t* opt)
+//{
+//    double elev_deg = el * R2D;
+//    double c = (type == 1) ? 1.3   : 0.013; /* code vs phase */
+//    double d = (type == 1) ? 5.3   : 0.053;
+//    double E0 = 10.0; /* degrees */
+//
+//    double efact = (sys == SYS_GLO) ? EFACT_GLO : (sys == SYS_SBS ? EFACT_SBS : EFACT_GPS);
+//    double ionofact = (opt->ionoopt == IONOOPT_IFLC) ? 3.0 : 1.0;
+//
+//    double term = c + d * exp(-elev_deg / E0);
+//    trace(4, "[DBG] varerr F4 sat=%2d sys=%d el=%.1f idx=%d type=%d c=%.3f d=%.3f term=%.3f\n",
+//        sat, sys, elev_deg, idx, type, c, d, term);
+//
+//    return SQR(ionofact * efact * term);
+//}
+
+
+///* measurement error variance -- Function_1: constant sigma0 */
+//static double varerr(int sat, int sys, double el, int idx, int type,
+//             const prcopt_t* opt)
+//{
+//    /* sigma0 per Table: code 0.6 m (or 0.9 for GE1), phase 0.006 m (0.009 for GE1) */
+//    double sigma0 = (type == 1) ? 0.6 : 0.006; /* type 1=code, 0=phase */
+//
+//    /* system factor and iono-free scaling kept consistent with RTKLIB style */
+//    double efact = (sys == SYS_GLO) ? EFACT_GLO : (sys == SYS_SBS ? EFACT_SBS : EFACT_GPS);
+//    double ionofact = (opt->ionoopt == IONOOPT_IFLC) ? 3.0 : 1.0;
+//
+//    double sig = ionofact * efact * sigma0;
+//    trace(4, "[DBG] varerr F1 sat=%2d sys=%d idx=%d type=%d sigma0=%.3f sig=%.3f\n",
+//        sat, sys, idx, type, sigma0, sig);
+//
+//    return SQR(sig);
+//}
+
+
+/* chi-square threshold for PPP-AREKF ---------------------------------------
+* 返回 PPP-AREKF 使用的卡方门限。
+* args   : int    dof      I   自由度，一般取当前历元有效观测方程个数 nv
+* return : 卡方门限值
+* notes  : 1) 当 dof<=100 时，直接复用 RTKLIB 已有 chisqr[] 表
+*          2) 当 dof>100 时，使用 Wilson-Hilferty 近似补足门限，避免表长不足
+*          3) 当前实现对应 alpha=0.001，与 RTKLIB chisqr[] 一致
+*-----------------------------------------------------------------------------*/
+static double chi2_thres_arekf(int dof)
+{
+    const double z=3.0902323061678132; /* alpha=0.001 对应的标准正态分位值 */
+    double k,a;
     
-    if (type==1) fact*=opt->eratio[idx==0?0:1];
-    fact*=sys==SYS_GLO?EFACT_GLO:(sys==SYS_SBS?EFACT_SBS:EFACT_GPS);
+    if (dof<=0) return 0.0;
+    if (dof<=100) return chisqr[dof-1];
     
-    if (sys==SYS_GPS||sys==SYS_QZS) {
-        if (idx==2) fact*=EFACT_GPS_L5; /* GPS/QZS L5 error factor */
+    k=(double)dof;
+    a=1.0-2.0/(9.0*k)+z*sqrt(2.0/(9.0*k));
+    return k*a*a*a;
+}
+/* PPP gross-error injection option -----------------------------------------*/
+typedef struct {
+    int enable;         /* 0:off 1:on */
+    int epoch0;         /* start epoch index (0-based) */
+    int epoch1;         /* end epoch index (inclusive) */
+    int sat;            /* RTKLIB sat no or PRN (0: all sats) */
+    char obs;           /* observation type, currently only 'P' is used */
+    double mag;         /* fault magnitude in meters */
+    int continuous;     /* 0: single epoch, 1: epoch0..epoch1 */
+} ppp_fault_opt_t;
+/* parse PPP gross-error injection options from misc-pppopt ------------------*/
+static void get_ppp_faultopt(const char *pppopt, ppp_fault_opt_t *fault)
+{
+    const char *p;
+    char mode[16]="",obs[8]="P";
+    
+    fault->enable=0;
+    fault->epoch0=0;
+    fault->epoch1=0;
+    fault->sat=0;
+    fault->obs='P';
+    fault->mag=0.0;
+    fault->continuous=0;
+    
+    if (!pppopt||!*pppopt) return;
+    
+    if ((p=strstr(pppopt,"-FAULT=")))        sscanf(p,"-FAULT=%d",&fault->enable);
+    if ((p=strstr(pppopt,"-FAULT_EPOCH0="))) sscanf(p,"-FAULT_EPOCH0=%d",&fault->epoch0);
+    if ((p=strstr(pppopt,"-FAULT_EPOCH1="))) sscanf(p,"-FAULT_EPOCH1=%d",&fault->epoch1);
+    if ((p=strstr(pppopt,"-FAULT_SAT=")))    sscanf(p,"-FAULT_SAT=%d",&fault->sat);
+    if ((p=strstr(pppopt,"-FAULT_MAG=")))    sscanf(p,"-FAULT_MAG=%lf",&fault->mag);
+    if ((p=strstr(pppopt,"-FAULT_OBS="))&&sscanf(p,"-FAULT_OBS=%7s",obs)==1) {
+        fault->obs=obs[0]>='a'&&obs[0]<='z'?obs[0]-32:obs[0];
     }
-    if (opt->ionoopt==IONOOPT_IFLC) fact*=3.0;
-    return SQR(fact*opt->err[1])+SQR(fact*opt->err[2]/sinel);
+    if ((p=strstr(pppopt,"-FAULT_MODE="))&&sscanf(p,"-FAULT_MODE=%15s",mode)==1) {
+        if (mode[0]=='1'||mode[0]=='C'||mode[0]=='c') fault->continuous=1;
+    }
+    if (fault->epoch1<fault->epoch0) fault->epoch1=fault->epoch0;
+}
+/* PPP epoch counter for fault injection -------------------------------------*/
+static int ppp_fault_epoch(gtime_t time)
+{
+    static gtime_t time_prev={0};
+    static int epoch=-1;
+    double dt=timediff(time,time_prev);
+    
+    if (time_prev.time==0||fabs(dt)>1E-9) {
+        if (time_prev.time==0||dt<0.0||fabs(dt)>86400.0) epoch=0;
+        else epoch++;
+        time_prev=time;
+    }
+    return epoch<0?0:epoch;
+}
+/* test whether current observation should be injected -----------------------*/
+static int ppp_fault_active(const ppp_fault_opt_t *fault, int epoch, int sat)
+{
+    int prn=0;
+    
+    if (!fault->enable||fault->mag==0.0||fault->obs!='P') return 0;
+    
+    if (fault->continuous) {
+        if (epoch<fault->epoch0||epoch>fault->epoch1) return 0;
+    }
+    else if (epoch!=fault->epoch0) return 0;
+    
+    satsys(sat,&prn);
+    if (fault->sat>0&&fault->sat!=sat&&fault->sat!=prn) return 0;
+    
+    return 1;
+}
+/* adaptive robust test for PPP ---------------------------------------------
+* 基于论文 AREKF 思想，对当前历元 PPP 的观测协方差 R 做一次更新前鲁棒检验。
+* args   : rtk_t  *rtk     I   PPP 控制结构体
+*          double *P       I   当前历元预测协方差阵（滤波前）
+*          double *H       I   设计矩阵
+*          double *v       I   创新残差向量
+*          double *R       IO  观测噪声协方差阵，若判定异常则在原地放大
+*          int    nv       I   当前历元有效观测方程个数
+* return : 1: 当前历元触发了 AREKF 放缩  0: 未触发或计算失败
+* notes  : 1) PPP 的 R 由 ppp_res() 构造成对角阵，因此更适合按观测对角元单独调整
+*          2) 保留整体马氏距离 d 作为诊断量，用于判断当前历元整体异常程度
+*          3) 实际放缩时使用单观测统计量 di=v_i^2/S_ii，仅放大对应的 R[i,i]
+*          4) 这样可以避免少数坏观测连带降低整批正常观测的权重
+*-----------------------------------------------------------------------------*/
+static int arekf_ppp(rtk_t *rtk, const double *P,
+                     const double *H, const double *v, double *R, int nv)
+{
+    const double k_thres=0.10; /* chi-square 门限缩放系数，便于实验阶段快速调参 */
+    double *F=NULL,*S=NULL,*Sinv=NULL,*w=NULL;
+    double d=0.0,thres_g=0.0,thres_l=0.0,beta_g=1.0,beta_i=1.0,beta_max=1.0;
+    double sii,di;
+    char tstr[32];
+    int i,info,applied=0,nadj=0;
+    
+    /* 如需通过配置开关启用，可恢复下面这句判断 */
+    /*if (!strstr(rtk->opt.pppopt,"-AREKF")||nv<=0) return 0;*/
+    if (nv<=0) return 0;
+    
+    F=mat(rtk->nx,nv);
+    S=mat(nv,nv);
+    Sinv=mat(nv,nv);
+    w=mat(nv,1);
+    
+    /* 先算 F=P*H，再构造创新协方差 S=H''*P*H+R */
+    matmul("NN",rtk->nx,nv,rtk->nx,1.0,P,H,0.0,F);
+    matcpy(S,R,nv,nv);
+    matmul("TN",nv,nv,rtk->nx,1.0,H,F,1.0,S);
+    matcpy(Sinv,S,nv,nv);
+    
+    /* 求 inv(S)，若失败则放弃本次鲁棒处理，保持原 PPP 流程继续 */
+    info=matinv(Sinv,nv);
+    if (info) {
+        time2str(rtk->sol.time,tstr,2);
+        trace(2,"%s AREKF: innovation covariance inversion error nv=%d info=%d\n",
+              tstr,nv,info);
+        free(F); free(S); free(Sinv); free(w);
+        return 0;
+    }
+    /* 仍然计算整体创新统计量 d=v''*inv(S)*v，用于日志诊断 */
+    matmul("NN",nv,1,nv,1.0,Sinv,v,0.0,w);
+    for (i=0;i<nv;i++) d+=v[i]*w[i];
+    
+    thres_g=k_thres*chi2_thres_arekf(nv);
+    thres_l=k_thres*chi2_thres_arekf(1);
+    if (thres_g>0.0&&d>thres_g) {
+        beta_g=MAX(1.0,d/thres_g);
+    }
+    time2str(rtk->sol.time,tstr,2);
+    
+    /* PPP 的 R 本来就是对角阵，这里按观测逐条调整对角元 R[i,i]。
+     * di=v_i^2/S_ii 可看作单观测标准化残差统计量。
+     * 只有当前观测异常时才放大对应的测量噪声，避免整批观测一起降权。 */
+    if (thres_l>0.0) {
+        for (i=0;i<nv;i++) {
+            sii=S[i+i*nv];
+            if (sii<=0.0) continue;
+            
+            di=SQR(v[i])/sii;
+            if (di<=thres_l) continue;
+            
+            beta_i=MAX(1.0,di/thres_l);
+            R[i+i*nv]*=beta_i;
+            if (beta_max<beta_i) beta_max=beta_i;
+            nadj++;
+            applied=1;
+            
+            trace(4,"%s AREKF obs=%d v=%9.4f sii=%9.4e di=%8.3f beta_i=%8.3f\n",
+                  tstr,i+1,v[i],sii,di,beta_i);
+        }
+    }
+    /* 输出整体统计量和逐观测放缩摘要，便于验证是否真正触发了逐观测 AREKF */
+    trace(3,"%s AREKF: nv=%d d=%.3f thres=%.3f beta_g=%.3f thres1=%.3f nadj=%d beta_max=%.3f applied=%d\n",
+          tstr,nv,d,thres_g,beta_g,thres_l,nadj,beta_max,applied);
+    
+    free(F); free(S); free(Sinv); free(w);
+    return applied;
 }
 /* initialize state（x阵） and covariance（p阵） -------------------------------------------*/
 static void initx(rtk_t *rtk, double xi, double var, int i)
@@ -373,7 +618,7 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
                       const double *dants, double phw, double *L, double *P,
                       double *Lc, double *Pc)
 {
-    double freq[NFREQ]={0},C1,C2;
+     double freq[NFREQ]={0},C1,C2;
     int i,sys=satsys(obs->sat,NULL);
     
     for (i=0;i<NFREQ;i++) {
@@ -486,7 +731,12 @@ static void detslp_mw(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
         }
     }
 }
-/* temporal update of position -----------------------------------------------*/
+/* temporal update of position -------------
+ args 
+ rtk_t* rtk      IO  rtk 控制结构体
+ return
+ none
+----------------------------------*/
 static void udpos_ppp(rtk_t *rtk)
 {
     double *F,*P,*FP,*x,*xp,pos[3],Q[9]={0},Qv[9];
@@ -502,14 +752,14 @@ static void udpos_ppp(rtk_t *rtk)
     /* initialize position for first epoch */
     if (norm(rtk->x,3)<=0.0) {//仅PPP首历元执行这步，从次历元开始不再采用当前的历元SPP的解赋值X阵
         for (i=0;i<3;i++)   //初始化xyz
-            initx(rtk,rtk->sol.rr[i],VAR_POS,i);//用spp解得的xyz+预设的spp定位方差60（差别不大）赋值给x阵和p阵
+            initx(rtk,rtk->sol.rr[i],VAR_POS,i);//用spp解得的xyz+预设的spp定位方差3600（差别不大）赋值给x阵和p阵，
         if (rtk->opt.dynamics) //非动态跳过这里
         {
             for (i=3;i<6;i++) initx(rtk,rtk->sol.rr[i],VAR_VEL,i);
             for (i=6;i<9;i++) initx(rtk,1E-6,VAR_ACC,i);
         }
     }
-    /* static ppp mode   rtk->prn[5]为0，实际上并没有给xyz添加过程噪声，本代码无效*/
+    /* static ppp mode   rtk->prn[5]为0，实际上并没有给xyz添加过程噪声，因为这里是静态接收机位置不变本代码无效*/
     if (rtk->opt.mode==PMODE_PPP_STATIC) {//次历元来到这里，不动x阵，只给p阵加过程噪声
         for (i=0;i<3;i++) {
             rtk->P[i*(1+rtk->nx)]+=SQR(rtk->opt.prn[5])*fabs(rtk->tt);//EKF之预测协方差阵 P=FPF”+Q 因F阵为单位阵，故此处只需+过程噪声Q阵.
@@ -523,6 +773,7 @@ static void udpos_ppp(rtk_t *rtk)
         }
         return;
     }
+    // 动力学模式动态 PPP，构建状态转移矩阵 F
     /* generate valid state index */
     ix=imat(rtk->nx,1);
     for (i=nx=0;i<rtk->nx;i++) {
@@ -532,6 +783,7 @@ static void udpos_ppp(rtk_t *rtk)
         free(ix);
         return;
     }
+    // 状态转移矩阵构建
     /* state transition of position/velocity/acceleration */
     F=eye(nx); P=mat(nx,nx); FP=mat(nx,nx); x=mat(nx,1); xp=mat(nx,1);
     
@@ -548,6 +800,7 @@ static void udpos_ppp(rtk_t *rtk)
         }
     }
     /* x=F*x, P=F*P*F+Q */
+    // 状态转移
     matmul("NN",nx,1,nx,1.0,F,x,0.0,xp);
     matmul("NN",nx,nx,nx,1.0,F,P,0.0,FP);
     matmul("NT",nx,nx,nx,1.0,FP,F,0.0,P);
@@ -558,6 +811,7 @@ static void udpos_ppp(rtk_t *rtk)
             rtk->P[ix[i]+ix[j]*rtk->nx]=P[i+j*nx];
         }
     }
+    // 为 Q 矩阵加速度部分加过程噪声
     /* process noise added to only acceleration */
     Q[0]=Q[4]=SQR(rtk->opt.prn[3])*fabs(rtk->tt);
     Q[8]=SQR(rtk->opt.prn[4])*fabs(rtk->tt);
@@ -576,42 +830,56 @@ static void udclk_ppp(rtk_t *rtk)
     
     trace(3,"udclk_ppp:\n");
     
-    /* initialize every epoch for clock (white noise) */
-    for (i=0;i<NSYS;i++) {
-        if (rtk->opt.sateph==EPHOPT_PREC) {
-            /* time of prec ephemeris is based gpst 检查是否为精密星历，精密星历的时间是基于gps时间的，只给gps槽的ic 0取值。*/
-            /* negelect receiver inter-system bias  */
-            dtr=rtk->sol.dtr[3];//PPP的EKF  dtr初值，直接采用本历元spp的结果，注意是所有的历元而非仅仅首个历元！
+    ///* initialize every epoch for clock (white noise) */
+    //for (i=0;i<NSYS;i++) {
+    //    if (rtk->opt.sateph==EPHOPT_PREC) {
+    //        /* time of prec ephemeris is based gpst 检查是否为精密星历，精密星历的时间是基于gps时间的，只给gps槽的ic 0取值。*/
+    //        /* negelect receiver inter-system bias  */
+    //        dtr=rtk->sol.dtr[3];//PPP的EKF  dtr初值，直接采用本历元spp的结果，注意是所有的历元而非仅仅首个历元！
+    //    }
+    //    else {  //不是精密星历采用前一秒的数据，并考虑系统间时差信息。
+    //        dtr=i==0?rtk->sol.dtr[0]:rtk->sol.dtr[0]+rtk->sol.dtr[i];
+    //    }
+    //    initx(rtk,CLIGHT*dtr,VAR_CLK,IC(i,&rtk->opt));//赋值x阵和P阵中钟差对应的位置，因为接收机钟差相互独立，所以用spp的值，此时前两个方程失效
+    //}
+
+
+    /*使用北斗加上gps的针对钟差的修改方式*/
+    for (i = 0; i < NSYS; i++) {
+        /* 统一策略：GPS 用自身，其他系统=GPS + 该系统的 SPP 相对偏差 */
+        if (i == 0) {
+            dtr = rtk->sol.dtr[0];                  /* GPS */
         }
-        else {  //不是精密星历采用前一秒的数据，并考虑系统间时差信息。
-            dtr=i==0?rtk->sol.dtr[0]:rtk->sol.dtr[0]+rtk->sol.dtr[i];
+        else {
+            dtr = rtk->sol.dtr[0] + rtk->sol.dtr[i];/* BDS 等 */
         }
-        initx(rtk,CLIGHT*dtr,VAR_CLK,IC(i,&rtk->opt));//赋值x阵和P阵中钟差对应的位置
+        initx(rtk, CLIGHT * dtr, VAR_CLK, IC(i, &rtk->opt));
     }
 }
 /* temporal update of tropospheric parameters --------------------------------*/
 static void udtrop_ppp(rtk_t *rtk)
 {
-    double pos[3],azel[]={0.0,PI/2.0},ztd,var;
-    int i=IT(&rtk->opt),j;
+    double pos[3],azel[]={0.0,PI/2.0},ztd,var;// pos: 接收机位置（ECEF坐标），azel: 方位角和高度角（zenith方向），ztd: 对流层湿延迟，var: 湿延迟方差
+    int i=IT(&rtk->opt),j;          // i: 对流层状态向量的起始索引（由选项确定），j: 循环变量
     
     trace(3,"udtrop_ppp:\n");
     
     if (rtk->x[i]==0.0) {//首次迭代，对流层未知数初值为0
-        ecef2pos(rtk->sol.rr,pos);
-        ztd=sbstropcorr(rtk->sol.time,pos,azel,&var);
-        initx(rtk,ztd,var,i);
+        ecef2pos(rtk->sol.rr,pos);// 将ECEF坐标（rtk->sol.rr）转换为地理坐标（经纬度高度）存储到pos
+        ztd=sbstropcorr(rtk->sol.time,pos,azel,&var);// 根据当前时间和位置计算初始ZTD及方差，azel为zenith方向
+        initx(rtk,ztd,var,i);//赋值x阵和P阵中对流层对应的位置 ，trop
         
-        if (rtk->opt.tropopt>=TROPOPT_ESTG) {
-            for (j=i+1;j<i+3;j++) initx(rtk,1E-6,VAR_GRA,j);
+        if (rtk->opt.tropopt>=TROPOPT_ESTG) {// 如果选项tropopt>=TROPOPT_ESTG，估计对流层梯度
+            for (j=i+1;j<i+3;j++)           // 循环初始化两个梯度参数（通常为南北和东西向）
+                initx(rtk,1E-6,VAR_GRA,j);// 初始化状态为1E-6（小值），方差为VAR_GRA（预定义常数）
         }
     }
-    else {//非首次迭代
-        rtk->P[i+i*rtk->nx]+=SQR(rtk->opt.prn[2])*fabs(rtk->tt);//噪声输入阵*噪声驱动矩阵（时间）=过程噪声
-        
-        if (rtk->opt.tropopt>=TROPOPT_ESTG) {
-            for (j=i+1;j<i+3;j++) {
-                rtk->P[j+j*rtk->nx]+=SQR(rtk->opt.prn[2]*0.1)*fabs(rtk->tt);
+    else {//非首次迭代,如果已初始化，进行时间更新
+        rtk->P[i+i*rtk->nx]+=SQR(rtk->opt.prn[2])*fabs(rtk->tt);//噪声输入阵*噪声驱动矩阵（时间）=过程噪声 非矩阵运算，但是逐元素赋值,
+        // 更新ZTD协方差，增加时间相关的方差项，prn[2]为噪声标准差，tt为时间间隔
+        if (rtk->opt.tropopt>=TROPOPT_ESTG) {// 如果估计梯度参数
+            for (j=i+1;j<i+3;j++) {          // 循环更新两个梯度参数的协方差
+                rtk->P[j+j*rtk->nx]+=SQR(rtk->opt.prn[2]*0.1)*fabs(rtk->tt);     // 梯度噪声较ZTD小（乘0.1），反映变化较缓
             }
         }
     }
@@ -674,11 +942,12 @@ static void udbias_ppp(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
     
     trace(3,"udbias  : n=%d\n",n);
     
-    /* handle day-boundary clock jump 钟跳 */
+    /* handle day-boundary clock jump 日边界钟跳检测 */
     if (rtk->opt.posopt[5]) {
         clk_jump=ROUND(time2gpst(obs[0].time,NULL)*10)%864000==0;
     }
-    for (i=0;i<MAXSAT;i++) for (j=0;j<rtk->opt.nf;j++) {
+    for (i=0;i<MAXSAT;i++)
+        for (j=0;j<rtk->opt.nf;j++) {
         rtk->ssat[i].slip[j]=0;//先默认所有历元没有周跳，1表示有周跳
     }
     /* detect cycle slip by LLI */
@@ -703,7 +972,7 @@ static void udbias_ppp(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
         }
         for (i=k=0;i<n&&i<MAXOBS;i++) {
             sat=obs[i].sat;
-            j=IB(sat,f,&rtk->opt);
+            j=IB(sat,f,&rtk->opt);//模糊度在x阵中的索引
             //计算pc和Lc（此处不进行天线和相位缠绕改正，dante和dants都为0）
             corr_meas(obs+i,nav,rtk->ssat[sat-1].azel,&rtk->opt,dantr,dants,
                       0.0,L,P,&Lc,&Pc);
@@ -711,7 +980,7 @@ static void udbias_ppp(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
             bias[i]=0.0;//bias:存储当前历元所有卫星(96)的模糊度，区分与681行的不同:bias[i]是临时变量，用于更新rtk->x
             
             if (rtk->opt.ionoopt==IONOOPT_IFLC) {
-                bias[i]=Lc-Pc;//当前历元的宽巷模糊度*宽巷波长！整周模糊度有正和负，o文件相位
+                bias[i]=Lc-Pc;//当前历元的宽巷模糊度*宽巷波长！整周模糊度有正和负，o文件相位观测值不包含整周模糊度，仅bias本身带有负号
                 slip[i]=rtk->ssat[sat-1].slip[0]||rtk->ssat[sat-1].slip[1];//双频观测，只有一频有周跳就废了
             }
             else if (L[f]!=0.0&&P[f]!=0.0) {
@@ -738,13 +1007,13 @@ static void udbias_ppp(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
             trace(2,"phase-code jump corrected: %s n=%2d dt=%12.9fs\n",
                   time_str(rtk->sol.time,0),k,offset/k/CLIGHT);
         }
-        for (i=0;i<n&&i<MAXOBS;i++) {
+        for (i=0;i<n&&i<MAXOBS;i++) {//n表示当前历元观测到的卫星数
             sat=obs[i].sat;
             j=IB(sat,f,&rtk->opt);
             
             rtk->P[j+j*rtk->nx]+=SQR(rtk->opt.prn[0])*fabs(rtk->tt);//此处的prn[0]就是conf配置文件中设置的越小越好的stats-prnbias,rtk->x继承 了上一个历元s，rtk->P为上一个历元s+过程噪声
             
-            if (bias[i]==0.0||(rtk->x[j]!=0.0&&!slip[i])) continue;//不continue的条件：rtk->x[j]=0.0(首历元)||slip[i]=1(有周跳)
+            if (bias[i]==0.0||(rtk->x[j]!=0.0&&!slip[i])) continue;//不continue的条件：rtk->x[j]=0.0(首历元)||slip[i]=1(有周跳)；定位理想情况：模糊度不为0且无周跳，则继续
             
             /* reinitialize phase-bias if detecting cycle slip */
             initx(rtk,bias[i],VAR_BIAS,IB(sat,f,&rtk->opt));//用当前计算的bias更新rtk->x，用VAR_BIAS更新rtk->P
@@ -756,15 +1025,23 @@ static void udbias_ppp(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
         }
     }
 }
-/* temporal update of states --------------------------------------------------*/
+/* temporal update of states --------
+args 
+rtk_t* rtk      IO  rtk 控制结构体
+obsd_t* obs     I   obs 观测数据
+int      n      I   obs 观测数据的数量
+nav_t* nav      I   导航数据
+ return
+none
+------------------------------------------*/
 static void udstate_ppp(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
 {
     trace(3,"udstate_ppp: n=%d\n",n);
     
-    /* temporal update of position */
+    /* temporal update of position */// 调用 udpos_ppp 根据不同模式初始化状态 rtk->x 中的位置值
     udpos_ppp(rtk);//位置初始化
     
-    /* temporal update of clock */
+    /* temporal update of clock */// 调用 udclk_ppp 初始化状态 rtk->x 中的钟差值（6个，因有6个系统）
     udclk_ppp(rtk);//dtr初始化 (以pst为基准)EKF初值采用当前历元的spp dtr结果
     
     /* temporal update of tropospheric parameters */
@@ -779,10 +1056,21 @@ static void udstate_ppp(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
     if (rtk->opt.nf>=3) {
         uddcb_ppp(rtk);
     }
-    /* temporal update of phase-bias */
+    /* temporal update of phase-bias */// 调用 udbias_ppp 更新载波相位偏移状态值以及其误差协方差。
     udbias_ppp(rtk,obs,n,nav);//phase-bias   模糊度初始化
 }
-/* satellite antenna phase center variation ----------------------------------*/
+/* satellite antenna phase center variation -----------
+* 计算卫星天线相位中心变化修正值
+* args   : const double *rs    I   卫星位置 [x,y,z] (ECEF坐标系，米)
+*          const double *rr    I   接收机位置 [x,y,z] (ECEF坐标系，米)
+*          const pcv_t *pcv    I   卫星天线参数结构体（包含PCV数据）
+*          double *dant        O   输出的PCV修正值 [dx,dy,dz] (米)
+* return : none
+* notes  : 基于天底角计算卫星天线相位中心变化修正
+*          天底角=0°：卫星正对地心
+*          天底角=90°：卫星在地平线上
+*          使用插值方法计算PCV修正值
+-----------------------*/
 static void satantpcv(const double *rs, const double *rr, const pcv_t *pcv,
                       double *dant)
 {
@@ -800,6 +1088,9 @@ static void satantpcv(const double *rs, const double *rr, const pcv_t *pcv,
     nadir=acos(cosa);
     
     antmodel_s(pcv,nadir,dant);
+    // 四级日志：验证卫星PCV修正计算
+    tracet(4,"satantpcv: type=%s nadir=%.1f dant=[%.6f %.6f %.6f]\n",
+        pcv->type,nadir*R2D,dant[0],dant[1],dant[2]);
 }
 /* precise tropospheric model ------------------------------------------------*/
 static double trop_model_prec(gtime_t time, const double *pos,
@@ -887,15 +1178,19 @@ static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
                    double *azel)
 {
     prcopt_t *opt=&rtk->opt;
+    ppp_fault_opt_t fault={0};
     double y,r,cdtr,bias,C=0.0,rr[3],pos[3],e[3],dtdx[3],L[NFREQ],P[NFREQ],Lc,Pc;
     double var[MAXOBS*2],dtrp=0.0,dion=0.0,vart=0.0,vari=0.0,dcb,freq;
     double dantr[NFREQ]={0},dants[NFREQ]={0};
     double ve[MAXOBS*2*NFREQ]={0},vmax=0;
     char str[32];
     int ne=0,obsi[MAXOBS*2*NFREQ]={0},frqi[MAXOBS*2*NFREQ],maxobs,maxfrq,rej;
+    int epoch=0,prn=0;
     int i,j,k,sat,sys,nv=0,nx=rtk->nx,stat=1;
     
     time2str(obs[0].time,str,2);
+    get_ppp_faultopt(opt->pppopt,&fault);
+    epoch=ppp_fault_epoch(obs[0].time);
     
     for (i=0;i<MAXSAT;i++) for (j=0;j<opt->nf;j++) rtk->ssat[i].vsat[j]=0;//卫星有效标志置0
     
@@ -934,6 +1229,9 @@ static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
         天线模型计算卫星天线校正值dants + 接收机天线校正值dantr */
         if (opt->posopt[0]) satantpcv(rs+i*6,rr,nav->pcvs+sat-1,dants);
         antmodel(opt->pcvr,opt->antdel[0],azel+i*2,opt->posopt[1],dantr);
+        // 一级日志：验证天线修正是否应用到PPP解算（只输出到trace文件，每个历元第一个卫星）
+        if (i==0) tracet(4,"ppp_res: sat=%d posopt[0]=%d posopt[1]=%d dantr[0]=%.6f dantr[2]=%.6f\n",
+            sat, opt->posopt[0], opt->posopt[1], dantr[0], dantr[2]);
         
         /* phase windup model 相位缠绕模型计算校正值phw */
         if (!model_phw(rtk->sol.time,sat,nav->pcvs[sat-1].type,
@@ -966,7 +1264,20 @@ static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
                 if ((freq=sat2freq(sat,obs[i].code[j/2],nav))==0.0) continue;
                 C=SQR(FREQ1/freq)*ionmapf(pos,azel+i*2)*(j%2==0?-1.0:1.0);
             }
-            for (k=0;k<nx;k++) H[k+nx*nv]=k<3?-e[k]:0.0;//H阵每行的前三个值是卫地距方向向量
+            /* Inject a configurable gross error into pseudorange only.
+             * The offset is added after PPP measurement correction and before
+             * residual formation, so the original PPP observation model stays intact. */
+            if (j%2==1&&ppp_fault_active(&fault,epoch,sat)) {
+                double y0=y;
+                y+=fault.mag;
+                if (!post) {
+                    satsys(sat,&prn);
+                    trace(2,"%s FAULT_INJ: epoch=%d sat=%2d prn=%2d type=%s%d mode=%s mag=%8.3f before=%12.4f after=%12.4f\n",
+                          str,epoch,sat,prn,opt->ionoopt==IONOOPT_IFLC?"PC":"P",
+                          j/2+1,fault.continuous?"CONT":"ONCE",fault.mag,y0,y);
+                }
+            }
+            for (k=0;k<nx;k++) H[k+nx*nv]=k<3?-e[k]:0.0;//1.H阵每行的前三个值是卫地距方向向量，1-3列是位置改正项xyz
             
             /* receiver clock */
             switch (sys) {
@@ -985,14 +1296,11 @@ static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
                     sat, sys, k, idx_clk, cdtr_val);
             }
             cdtr=x[IC(k,opt)];//接收机钟差
-
-
-
-            H[IC(k,opt)+nx*nv]=1.0;//H阵中接收机钟差项对应系数为1
+            H[IC(k,opt)+nx*nv]=1.0;//2.dtr系数为1.H阵中接收机钟差项对应系数为1
             
             if (opt->tropopt==TROPOPT_EST||opt->tropopt==TROPOPT_ESTG) {//当前conf选的是TROPOPT_EST
                 for (k=0;k<(opt->tropopt>=TROPOPT_ESTG?3:1);k++) {
-                    H[IT(opt)+k+nx*nv]=dtdx[k];//对流层次数设置为投影函数
+                    H[IT(opt)+k+nx*nv]=dtdx[k];//3.对流层系数设置为投影函数
                 }
             }
             if (opt->ionoopt==IONOOPT_EST) {
@@ -1004,8 +1312,9 @@ static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
                 H[ID(opt)+nx*nv]=1.0;
             }
             if (j%2==0) { /* phase bias 观测值是载波相位*/
-                if ((bias=x[IB(sat,j/2,opt)])==0.0) continue;//若该模糊度=0，说明有周跳，舍弃
-                H[IB(sat,j/2,opt)+nx*nv]=1.0;
+                if ((bias=x[IB(sat,j/2,opt)])==0.0) //若该模糊度=0，说明有周跳，舍弃
+                    continue;
+                H[IB(sat,j/2,opt)+nx*nv]=1.0;//4.模糊度参数系数为1
             }
 
 
@@ -1021,9 +1330,9 @@ static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
             else        rtk->ssat[sat-1].resp[j/2]=v[nv];//伪距残差
             
             /* variance */
-            var[nv]=varerr(obs[i].sat,sys,azel[1+i*2],j/2,j%2,opt)+
-                    vart+SQR(C)*vari+var_rs[i];//方差噪声剔除质量不好的卫星，一般是信噪比和截止高度角来作为筛选标准
-            if (sys==SYS_GLO&&j%2==1) var[nv]+=VAR_GLO_IFB;
+            var[nv]=varerr(obs[i].sat,sys,azel[1+i*2],j/2,j%2,opt)+vart+SQR(C)*vari+var_rs[i];
+            //方差噪声剔除质量不好的卫星，一般是信噪比和截止高度角来作为筛选标准,各观测值方差求和，用于构建R阵
+            if (sys==SYS_GLO&&j%2==1) var[nv]+=VAR_GLO_IFB;//格洛纳斯伪距加大方差，噪声还需要+IFB(频间噪声)
             trace(4,"%s sat=%2d %s%d res=%9.4f sig=%9.4f el=%4.1f\n",str,sat,
                   j%2?"P":"L",j/2+1,v[nv],sqrt(var[nv]),azel[1+i*2]*R2D);
             
@@ -1033,7 +1342,7 @@ static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
                       post,str,sat,j%2?"P":"L",j/2+1,v[nv],azel[1+i*2]*R2D);
                 exc[i]=1; rtk->ssat[sat-1].rejc[j%2]++;
                 continue;
-            }
+            }    
             /* record large post-fit residuals//当残差是验后残差(post!=0 EKF后)时，若>4倍std，则记录下这些残差于ve中 */
             if (post&&fabs(v[nv])>sqrt(var[nv])*THRES_REJECT) {//拒绝的卫星数量
                 obsi[ne]=i; frqi[ne]=j; ve[ne]=v[nv]; ne++;
@@ -1056,7 +1365,7 @@ static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
         exc[maxobs]=1; rtk->ssat[sat-1].rejc[maxfrq%2]++; stat=0;  //只要大于四倍std残差没有全部剔除完，就来到此处，stat会被置0
         ve[rej]=0;
     }
-    for (i=0;i<nv;i++) for (j=0;j<nv;j++) {
+    for (i=0;i<nv;i++) for (j=0;j<nv;j++) {//利用方差构造R阵（方差用到了高度角模型，R阵是对角阵），这里就是取权重
         R[i+j*nv]=i==j?var[i]:0.0;
     }
     trace(2, "PPP_RES: post=%d nv=%d n=%d\n", post, nv, n);
@@ -1138,7 +1447,15 @@ static int test_hold_amb(rtk_t *rtk)
     /* test # of continuous fixed */
     return ++rtk->nfix>=rtk->opt.minfix;
 }
-/* precise point positioning -------------------------------------------------*/
+/* precise point positioning ---
+ args 
+rtk_t* rtk       IO  rtk控制结构体
+obsd_t* obs      I   OBS观测数据
+int      n       I   OBS观测数据的数量
+nav_t* nav       I   导航数据
+ return 
+   none
+----------------------------------------------*/
 extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
 {
     const prcopt_t *opt=&rtk->opt;
@@ -1159,13 +1476,30 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
 
 
 
+    //     /* ========== 使用tracemat调试输出 ========== */
+    //trace(3, "\n========== PPP State Update Debug Info ==========\n");
+    //trace(3, "time: %s\n", str);
+    //trace(3, "State vector dimension: nx=%d\n", rtk->nx);
+    //trace(3, "Number of observations: n=%d\n", n);
 
+    ///* 打印状态向量x */
+    //trace(3, "State vectorx=\n");
+    //tracemat(3, rtk->x, 1, rtk->nx, 13, 4);
+
+    ///* 打印协方差矩阵P */
+    //trace(3, "Covariance matrix P=\n");
+    //tracemat(3, rtk->P, rtk->nx, rtk->nx, 13, 4);
+
+   
+    /* ========== 调试输出结束 ========== */
+
+
+    
     /* satellite positions and clocks */
     satposs(obs[0].time,obs,n,nav,rtk->opt.sateph,rs,dts,var,svh);
     //广播星历n文件，SPP精密星历sp3，精度在2cm以下
     //精密星历SP3,CLK，精度在2cm一下，ppp
     //精密位置和精密钟差都求出来了
-
 
     /* exclude measurements of eclipsing satellite (block IIA) */
     if (rtk->opt.posopt[3]) {
@@ -1176,16 +1510,16 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
         tidedisp(gpst2utc(obs[0].time),rtk->x,opt->tidecorr==1?1:7,&nav->erp,
                  opt->odisp[0],dr);
     }
-    //固体潮，海潮，极移等进行修正做掉，用dr来存储
+    //固体潮，海潮，极移等进行修正做掉，用dr来存储,课本讲得更详细
     //EKF参数初始化
-    nv=n*rtk->opt.nf*2+MAXSAT+3;//位置参数的个数,尽量先去大的值
-
+    nv=n*rtk->opt.nf*2+MAXSAT+3;//位置参数的个数,尽量先去大的值，n为可视卫星个数，不含指定双频的本系统卫星也包含在内
     xp=mat(rtk->nx,1); 
-    Pp=zeros(rtk->nx,rtk->nx);
+    Pp=zeros(rtk->nx,rtk->nx);//EKF后的X和P
     v=mat(nv,1);        //残差矩阵
     H=mat(rtk->nx,nv);  
-    R=mat(nv,nv);       //观测卫星的噪声矩阵，可以取权重
-    //H阵：
+    R=mat(nv,nv);       //观测卫星的噪声协方差矩阵，可以取权重，来自观测方程故为nv*nv
+    //H阵的一列：[-E  0  1  M  I ] 相位
+    //H阵的一列：[-E  0  1  M  0 ] 伪距
     
     for (i=0;i<MAX_ITER;i++) {
         
@@ -1198,6 +1532,8 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
             trace(2,"%s ppp (%d) no valid obs data\n",str,i+1);
             break;
         }//第一次进这里，后面的矩阵在下面进行准备
+        /* adaptive robust test before Kalman update */
+        /*arekf_ppp(rtk,Pp,H,v,R,nv);*/
         /* measurement update of ekf states */
         if ((info=filter(xp,Pp,H,v,R,rtk->nx,nv))) {//观测值的更新部分
             trace(2,"%s ppp (%d) filter error info=%d\n",str,i+1,info);

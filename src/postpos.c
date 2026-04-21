@@ -324,6 +324,156 @@ static void corr_phase_bias_ssr(obsd_t *obs, int n, const nav_t *nav)
         obs[i].L[j]-=nav->ssr[obs[i].sat-1].pbias[code-1]*freq/CLIGHT;
     }
 }
+/* multi-satellite pseudorange fault injection option ------------------------*/
+#define MFAULT_MAXSAT 5
+
+typedef struct {
+    int enable;                     /* 0:off 1:on */
+    int continuous;                 /* 0:single-window 1:continuous window */
+    int nsat;                       /* number of configured satellites */
+    int sats[MFAULT_MAXSAT];        /* RTKLIB sat no or system PRN */
+    double mag;                     /* fixed pseudorange bias in meters */
+    gtime_t ts;                     /* injection start time */
+    gtime_t te;                     /* injection end time */
+    int has_ts;                     /* start time configured */
+    int has_te;                     /* end time configured */
+} mfault_opt_t;
+/* parse compact time string YYYYMMDDhhmmss ----------------------------------*/
+static int parse_compact_time(const char *src, gtime_t *time)
+{
+    char buff[64];
+    
+    if (!src||strlen(src)<14) return 0;
+    
+    sprintf(buff,"%.4s %.2s %.2s %.2s %.2s %.2s",
+            src,src+4,src+6,src+8,src+10,src+12);
+    return str2time(buff,0,(int)strlen(buff),time)==0;
+}
+/* read multi-satellite fault injection options from misc-pppopt -------------*/
+static void get_mfaultopt(const char *pppopt, mfault_opt_t *fault)
+{
+    const char *p;
+    char mode[16]="",ts[32]="",te[32]="";
+    int i;
+    
+    fault->enable=0;
+    fault->continuous=1;
+    fault->nsat=0;
+    fault->mag=0.0;
+    fault->ts.time=0;
+    fault->te.time=0;
+    fault->has_ts=0;
+    fault->has_te=0;
+    for (i=0;i<MFAULT_MAXSAT;i++) fault->sats[i]=0;
+    
+    if (!pppopt||!*pppopt) return;
+    
+    if ((p=strstr(pppopt,"-MFAULT=")))        sscanf(p,"-MFAULT=%d",&fault->enable);
+    if ((p=strstr(pppopt,"-MFAULT_MAG=")))    sscanf(p,"-MFAULT_MAG=%lf",&fault->mag);
+    if ((p=strstr(pppopt,"-MFAULT_MODE="))&&sscanf(p,"-MFAULT_MODE=%15s",mode)==1) {
+        if (mode[0]=='0'||mode[0]=='O'||mode[0]=='o') fault->continuous=0;
+    }
+    if ((p=strstr(pppopt,"-MFAULT_TS="))&&sscanf(p,"-MFAULT_TS=%31s",ts)==1) {
+        fault->has_ts=parse_compact_time(ts,&fault->ts);
+    }
+    if ((p=strstr(pppopt,"-MFAULT_TE="))&&sscanf(p,"-MFAULT_TE=%31s",te)==1) {
+        fault->has_te=parse_compact_time(te,&fault->te);
+    }
+    for (i=0;i<MFAULT_MAXSAT;i++) {
+        char key[32],fmt[32];
+        int sat=0;
+        sprintf(key,"-MFAULT_SAT%d=",i+1);
+        sprintf(fmt,"-MFAULT_SAT%d=%%d",i+1);
+        if ((p=strstr(pppopt,key))&&sscanf(p,fmt,&sat)==1&&sat>0&&
+            fault->nsat<MFAULT_MAXSAT) {
+            fault->sats[fault->nsat++]=sat;
+        }
+    }
+    if (!fault->has_ts&&fault->has_te) {
+        fault->ts=fault->te;
+        fault->has_ts=1;
+    }
+    if (fault->has_ts&&!fault->has_te) {
+        fault->te=fault->ts;
+        fault->has_te=1;
+    }
+}
+/* test whether current epoch is within configured fault window --------------*/
+static int mfault_time_active(const mfault_opt_t *fault, gtime_t time)
+{
+    if (!fault->enable||fault->mag==0.0) return 0;
+    if (!fault->has_ts||!fault->has_te) return 0;
+    
+    if (fault->continuous) {
+        if (timediff(time,fault->ts)<-DTTOL) return 0;
+        if (timediff(time,fault->te)> DTTOL) return 0;
+    }
+    else {
+        if (fabs(timediff(time,fault->ts))>DTTOL) return 0;
+    }
+    return 1;
+}
+/* test whether current satellite matches configured fault list --------------*/
+static int mfault_sat_active(const mfault_opt_t *fault, int sat)
+{
+    int i,prn=0;
+    
+    if (fault->nsat<=0) return 0;
+    
+    satsys(sat,&prn);
+    for (i=0;i<fault->nsat;i++) {
+        if (fault->sats[i]==sat||fault->sats[i]==prn) return 1;
+    }
+    return 0;
+}
+/* inject fixed pseudorange faults into selected rover satellites ------------
+ * This helper is intentionally placed in postpos.c/procpos() rather than PPP
+ * internals. It edits only obs[i].P[j] before rtkpos(), so the PPP/EKF model,
+ * residual builder, and filter core remain unchanged.
+ *
+ * Supported misc-pppopt keys:
+ *   -MFAULT=1
+ *   -MFAULT_TS=YYYYMMDDhhmmss
+ *   -MFAULT_TE=YYYYMMDDhhmmss
+ *   -MFAULT_SAT1=118 ... -MFAULT_SAT5=130
+ *   -MFAULT_MAG=50.0
+ *   -MFAULT_MODE=CONT|ONCE
+ *
+ * Notes:
+ *   1) Only pseudorange P[j] is modified. L/D/SNR are untouched.
+ *   2) Only rover observations (rcv==1) are modified.
+ *   3) The same fixed magnitude is applied to every configured satellite.
+ *   4) sat can be either RTKLIB internal sat no or per-system PRN.
+ *-------------------------------------------------------------------------*/
+static void inject_multisat_pseudorange_fault(obsd_t *obs, int n,
+                                              const prcopt_t *popt)
+{
+    mfault_opt_t fault={0};
+    char tstr[32];
+    int i,j,prn=0;
+    
+    get_mfaultopt(popt->pppopt,&fault);
+    
+    if (!mfault_time_active(&fault,obs[0].time)) return;
+    
+    time2str(obs[0].time,tstr,2);
+    for (i=0;i<n;i++) {
+        if (obs[i].rcv!=1) continue; /* keep reference observations intact */
+        if (!mfault_sat_active(&fault,obs[i].sat)) continue;
+        
+        satsys(obs[i].sat,&prn);
+        for (j=0;j<NFREQ+NEXOBS;j++) {
+            double p0;
+            
+            if (obs[i].P[j]==0.0) continue;
+            
+            p0=obs[i].P[j];
+            obs[i].P[j]+=fault.mag;
+            trace(2,"%s MFAULT_INJ: sat=%2d prn=%2d type=P%d mag=%8.3f before=%12.4f after=%12.4f\n",
+                  tstr,obs[i].sat,prn,j+1,fault.mag,p0,obs[i].P[j]);
+        }
+    }
+}
 /* process positioning -------------------------------------------------------*/
 static void procpos(FILE *fp, const prcopt_t *popt, const solopt_t *sopt,
                     int mode)
@@ -357,6 +507,11 @@ static void procpos(FILE *fp, const prcopt_t *popt, const solopt_t *sopt,
             corr_phase_bias_ssr(obs,n,&navs);
         }
         //进入不同的模式的定位计算
+        /* Inject configurable multi-satellite pseudorange faults immediately
+         * before rtkpos(). This is the safest insertion point in post-processing:
+         * observation decoding and screening are already done, while PPP/EKF
+         * internals remain untouched. */
+        inject_multisat_pseudorange_fault(obs,n,popt);
         if (!rtkpos(&rtk,obs,n,&navs)) continue;
         
         if (mode==0) { /* forward/backward */
@@ -825,26 +980,29 @@ static void closeses(nav_t *nav, pcvs_t *pcvs, pcvs_t *pcvr)
 static void setpcv(gtime_t time, prcopt_t *popt, nav_t *nav, const pcvs_t *pcvs,
                    const pcvs_t *pcvr, const sta_t *sta)
 {
-    pcv_t *pcv,pcv0={0};
+     pcv_t *pcv,pcv0={0};
     double pos[3],del[3];
     int i,j,mode=PMODE_DGPS<=popt->mode&&popt->mode<=PMODE_FIXED;
     char id[64];
     
     /* set satellite antenna parameters */
     for (i=0;i<MAXSAT;i++) {
-        nav->pcvs[i]=pcv0;
-        if (!(satsys(i+1,NULL)&popt->navsys)) continue;
+        nav->pcvs[i]=pcv0;                              //初始化卫星天线参数
+        if (!(satsys(i+1,NULL)&popt->navsys)) continue; //搜索卫星天线参数
         if (!(pcv=searchpcv(i+1,"",time,pcvs))) {
             satno2id(i+1,id);
             trace(3,"no satellite antenna pcv: %s\n",id);
             continue;
         }
-        nav->pcvs[i]=*pcv;
+        nav->pcvs[i]=*pcv;      // 将找到的天线参数赋值给卫星
     }
-    for (i=0;i<(mode?2:1);i++) {
+    for (i=0;i<(mode?2:1);i++) {// 根据模式决定处理1个还是2个接收机
         popt->pcvr[i]=pcv0;
-        if (!strcmp(popt->anttype[i],"*")) { /* set by station parameters */
-            strcpy(popt->anttype[i],sta[i].antdes);
+        // 如果anttype为"*"或空字符串，从测站参数中读取天线类型
+        if (!strcmp(popt->anttype[i],"*")||!popt->anttype[i][0]) {
+            if (sta[i].antdes[0]) {
+                strcpy(popt->anttype[i],sta[i].antdes);// 使用测站参数中的天线描述
+            }
             if (sta[i].deltype==1) { /* xyz */
                 if (norm(sta[i].pos,3)>0.0) {
                     ecef2pos(sta[i].pos,pos);
@@ -856,13 +1014,26 @@ static void setpcv(gtime_t time, prcopt_t *popt, nav_t *nav, const pcvs_t *pcvs,
                 for (j=0;j<3;j++) popt->antdel[i][j]=stas[i].del[j];
             }
         }
+        // 四级日志：记录查找的接收机天线类型
+       /* tracet(4,"setpcv: searching rec ant type='%s' in %d entries\n",popt->anttype[i],pcvr->n);*/
         if (!(pcv=searchpcv(0,popt->anttype[i],time,pcvr))) {
             trace(2,"no receiver antenna pcv: %s\n",popt->anttype[i]);
+            // 四级日志：查找失败，列出所有可用的接收机天线类型
+            tracet(4,"setpcv: search failed, available rec ant types:\n");
+            for (j=0;j<pcvr->n&&j<10;j++) {
+                tracet(4,"  [%d] type='%s' code='%s' sat=%d\n",
+                    j,pcvr->pcv[j].type,pcvr->pcv[j].code,pcvr->pcv[j].sat);
+            }
             *popt->anttype[i]='\0';
             continue;
         }
         strcpy(popt->anttype[i],pcv->type);
-        popt->pcvr[i]=*pcv;
+        popt->pcvr[i]=*pcv;// 将天线参数赋值给接收机
+        // 四级日志：验证接收机天线参数加载（只输出到trace文件）
+        tracet(4,"setpcv: rec ant loaded type=%s off[0]=[%.3f %.3f %.3f] off[2]=[%.3f %.3f %.3f]\n",
+            popt->pcvr[i].type,
+            popt->pcvr[i].off[0][0], popt->pcvr[i].off[0][1], popt->pcvr[i].off[0][2],
+            popt->pcvr[i].off[2][0], popt->pcvr[i].off[2][1], popt->pcvr[i].off[2][2]);
     }
 }
 /* read ocean tide loading parameters ----------------------------------------*/
@@ -918,14 +1089,14 @@ static int execses(gtime_t ts, gtime_t te, double ti, const prcopt_t *popt,
     /* open debug trace */
     if (flag&&sopt->trace>0) {
         if (*outfile) {
-            strcpy(tracefile,outfile);
-            strcat(tracefile,".trace");
+            strcpy(tracefile,outfile);  //将输出文件名复制到tracefile中
+            strcat(tracefile,".trace"); //在tracefile后面添加.trace扩展名
         }
         else {
-            strcpy(tracefile,fopt->trace);
+            strcpy(tracefile,fopt->trace);  //如果输出文件名为空将文件选项中的trace路径复制到tracefile中
         }
-        traceclose();
-        traceopen(tracefile);
+       /* traceclose();
+        traceopen(tracefile);这里的配置文件打开太晚了，我调节到读取天线文件就进行了对应的打开日志的操作。*/
         tracelevel(sopt->trace);
     }
     /* read ionosphere data file *///做ppp需要用到的，在-o文件里面
@@ -1159,7 +1330,8 @@ static int execses_b(gtime_t ts, gtime_t te, double ti, const prcopt_t *popt,
 *          char   *base     I   base station id list (separated by " ")
 * return : status (0:ok,0>:error,1:aborted)
 * notes  : input files should contain observation data, navigation data, precise 
-*          ephemeris/clock (optional), sbas log file (optional), ssr message
+*          ephemeris/clock (optional), sbas log file (optional), 
+message
 *          log file (optional) and tec grid file (optional). only the first 
 *          observation data file in the input files is recognized as the rover
 *          data.
@@ -1204,7 +1376,18 @@ extern int postpos(gtime_t ts, gtime_t te, double ti, double tu,
     double tunit,tss;
     int i,j,k,nf,stat=0,week,flag=1,index[MAXINFILE]={0};
     char *ifile[MAXINFILE],ofile[1024],*ext;
-    
+    if (sopt->trace > 0) {
+        char tracefile[1024];
+        if (*outfile) {
+            strcpy(tracefile, outfile);
+            strcat(tracefile, ".trace");
+        }
+        else {
+            strcpy(tracefile, fopt->trace);
+        }
+        traceopen(tracefile);
+        tracelevel(sopt->trace);
+    }
     trace(3,"postpos : ti=%.0f tu=%.0f n=%d outfile=%s\n",ti,tu,n,outfile);
     
     /* open processing session */ //开始处理,文件读取，赋值navs、pcvs、pcvsrv

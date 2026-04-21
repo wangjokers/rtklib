@@ -1134,6 +1134,7 @@ typedef struct {        /* RTK control/result type */
     double tt;          /* 采样间隔time difference between current and previous (s) */
     double *x, *P;      /* float states and their covariance EKF的x阵和p阵，
                             x阵：xyz+若干个dtr+电离层+G01模糊度 G02模糊度等等 
+                            例如值解算gps，但是预定义开了四个系统，则会出现四个相同的dtr,这里的dtr都是由spp得来的
                             */
     double *xa,*Pa;     /* fixed states and their covariance固定模糊度才会启动 */
     int nfix;           /* number of continuous fixes of ambiguity */

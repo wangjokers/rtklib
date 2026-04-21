@@ -186,19 +186,18 @@ int main(int argc, char **argv)
      /*2.0版本用gps进行测试的ppp*/
     //n = 3;
     //infile[0] = "D:\\Desktop\\demo04\\test01\\chan2700.20o";
-    //infile[1] = "D:\\Desktop\\demo04\\test01\\brdc2700.20n";
+    //infile[1] = "D:\\Desktop\\demo \\test01\\brdc2700.20n";
     //infile[2] = "D:\\Desktop\\demo04\\test01\\igs21246.sp3";
     ////infile[3] = "D:\\Desktop\\demo04\\test01\\WUM0MGXFIN_20192740000_01D_30S_CLK.CLK";
     //outfile = "D:\\Desktop\\demo04\\test01\\chan_source_cmpbds.pos";
     //3.04版本用混合系统包含北斗的进行测试
     n = 4;
-    infile[0] = "d:\\desktop\\data2\\wuh20320.25o";
-    infile[1] = "d:\\desktop\\data2\\brdm0320.25p";
-    infile[2] = "d:\\desktop\\data2\\WUM0MGXFIN_20250320000_01D_05M_ORB.SP3";
-    infile[3] = "d:\\desktop\\data2\\WUM0MGXFIN_20250320000_01D_30S_CLK.CLK";
-    outfile = "d:\\desktop\\data2\\bds_result_2_B1I_B2a.pos";
-    //printf("opening file: [%s]\n", infile[0]);
-    //printf("path length  : %zu\n", strlen(infile[0]));
+    infile[0] = "D:\\Desktop\\rtk—learn\\rtklib\\data04_text\\202501\\ABPO\\ABPO00MDG_R_20250010000_01D_30S_MO.25o";
+    infile[1] = "D:\\Desktop\\rtk—learn\\rtklib\\data04_text\\202501\\BRDC00IGS_R_20250010000_01D_MN.rnx";
+    infile[2] = "D:\\Desktop\\rtk—learn\\rtklib\\data04_text\\202501\\COD0MGXFIN_20250010000_01D_05M_ORB.SP3";
+    infile[3] = "D:\\Desktop\\rtk—learn\\rtklib\\data04_text\\202501\\COD0MGXFIN_20250010000_01D_30S_CLK.CLK";
+    outfile = "D:\\Desktop\\rtk—learn\\rtklib\\data04_text\\202501\\ABPO\\text_noarekf_ABPO_b1c_b2a_2025001_gps_bds.pos";
+    //igmas版本的开发
     //用林提供的数据运行发现运行失败，只选中北斗无数据，加了gps发现解算的数据质量不好，中间丢失了大块的时间段
     
 

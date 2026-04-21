@@ -1003,7 +1003,7 @@ static void set_index(double ver, int sys, const char *opt,
     }
     ind->n=n;
     /*0和1对应的就是启动不启动的区别*/
-#if 1 /* for debug */
+#if 0 /* for debug */
     for (i=0;i<n;i++) {
         trace(2,"set_index: sys=%2d,tobs=%s code=%2d pri=%2d idx=%d pos=%d shift=%5.2f\n",
 			  sys,tobs[i],ind->code[i],ind->pri[i],ind->idx[i],ind->pos[i],
@@ -1483,7 +1483,7 @@ static int readrnxclk(FILE *fp, const char *opt, int index, nav_t *nav)
     if (!nav) return 0;
     
     /* set system mask */
-    mask=set_sysmask(opt);
+    mask=set_sysmask(opt); 
     
     while (fgets(buff,sizeof(buff),fp)) {
         
