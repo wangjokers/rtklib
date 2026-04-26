@@ -518,7 +518,7 @@ static int arekf_ppp(rtk_t *rtk, const double *P,
     int i,info,applied=0,nadj=0;
     
     /* 如需通过配置开关启用，可恢复下面这句判断 */
-    /*if (!strstr(rtk->opt.pppopt,"-AREKF")||nv<=0) return 0;*/
+    if (!strstr(rtk->opt.pppopt,"-AREKF")||nv<=0) return 0;
     if (nv<=0) return 0;
     
     F=mat(rtk->nx,nv);
@@ -1533,7 +1533,7 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
             break;
         }//第一次进这里，后面的矩阵在下面进行准备
         /* adaptive robust test before Kalman update */
-        /*arekf_ppp(rtk,Pp,H,v,R,nv);*/
+        arekf_ppp(rtk,Pp,H,v,R,nv);
         /* measurement update of ekf states */
         if ((info=filter(xp,Pp,H,v,R,rtk->nx,nv))) {//观测值的更新部分
             trace(2,"%s ppp (%d) filter error info=%d\n",str,i+1,info);
