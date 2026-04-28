@@ -424,25 +424,58 @@ static double chi2_thres_arekf(int dof)
     return k*a*a*a;
 }
 /* PPP gross-error injection option -----------------------------------------*/
+#define MAX_PPP_FAULT_SATS 8
+
 typedef struct {
     int enable;         /* 0:off 1:on */
     int epoch0;         /* start epoch index (0-based) */
     int epoch1;         /* end epoch index (inclusive) */
-    int sat;            /* RTKLIB sat no or PRN (0: all sats) */
-    char obs;           /* observation type, currently only 'P' is used */
-    double mag;         /* fault magnitude in meters */
+    int sat;            /* legacy single sat no or PRN (0: all sats) */
+    int sats[MAX_PPP_FAULT_SATS]; /* multi-sat target list, sat no or PRN */
+    int nsat;           /* number of entries in sats[] */
+    char obs;           /* P:code, L:phase, A:both */
+    double mag;         /* residual fault magnitude in meters */
     int continuous;     /* 0: single epoch, 1: epoch0..epoch1 */
 } ppp_fault_opt_t;
+/* add one satellite to PPP fault target list --------------------------------*/
+static void add_ppp_fault_sat(ppp_fault_opt_t *fault, int sat)
+{
+    int i;
+    
+    if (sat<=0) return;
+    for (i=0;i<fault->nsat;i++) {
+        if (fault->sats[i]==sat) return;
+    }
+    if (fault->nsat<MAX_PPP_FAULT_SATS) fault->sats[fault->nsat++]=sat;
+}
+/* parse comma-separated multi-satellite target list -------------------------*/
+static void parse_ppp_fault_sats(ppp_fault_opt_t *fault, const char *list)
+{
+    char buff[128],*p,*q;
+    int sat;
+    
+    if (!list||!*list) return;
+    strncpy(buff,list,sizeof(buff)-1);
+    buff[sizeof(buff)-1]='\0';
+    for (p=buff;*p;p=q) {
+        if ((q=strchr(p,','))) *q++='\0';
+        else q=p+strlen(p);
+        if (sscanf(p,"%d",&sat)==1) add_ppp_fault_sat(fault,sat);
+    }
+}
 /* parse PPP gross-error injection options from misc-pppopt ------------------*/
 static void get_ppp_faultopt(const char *pppopt, ppp_fault_opt_t *fault)
 {
     const char *p;
-    char mode[16]="",obs[8]="P";
+    char mode[16]="",obs[8]="P",sats[128]="";
+    char key[32],fmt[32];
+    int i,sat;
     
     fault->enable=0;
     fault->epoch0=0;
     fault->epoch1=0;
     fault->sat=0;
+    fault->nsat=0;
     fault->obs='P';
     fault->mag=0.0;
     fault->continuous=0;
@@ -453,10 +486,19 @@ static void get_ppp_faultopt(const char *pppopt, ppp_fault_opt_t *fault)
     if ((p=strstr(pppopt,"-FAULT_EPOCH0="))) sscanf(p,"-FAULT_EPOCH0=%d",&fault->epoch0);
     if ((p=strstr(pppopt,"-FAULT_EPOCH1="))) sscanf(p,"-FAULT_EPOCH1=%d",&fault->epoch1);
     if ((p=strstr(pppopt,"-FAULT_SAT=")))    sscanf(p,"-FAULT_SAT=%d",&fault->sat);
+    if ((p=strstr(pppopt,"-FAULT_SATS="))&&sscanf(p,"-FAULT_SATS=%127s",sats)==1) {
+        parse_ppp_fault_sats(fault,sats);
+    }
+    for (i=1;i<=MAX_PPP_FAULT_SATS;i++) {
+        sprintf(key,"-FAULT_SAT%d=",i);
+        sprintf(fmt,"-FAULT_SAT%d=%%d",i);
+        if ((p=strstr(pppopt,key))&&sscanf(p,fmt,&sat)==1) add_ppp_fault_sat(fault,sat);
+    }
     if ((p=strstr(pppopt,"-FAULT_MAG=")))    sscanf(p,"-FAULT_MAG=%lf",&fault->mag);
     if ((p=strstr(pppopt,"-FAULT_OBS="))&&sscanf(p,"-FAULT_OBS=%7s",obs)==1) {
         fault->obs=obs[0]>='a'&&obs[0]<='z'?obs[0]-32:obs[0];
     }
+    if (fault->obs!='P'&&fault->obs!='L'&&fault->obs!='A') fault->obs='P';
     if ((p=strstr(pppopt,"-FAULT_MODE="))&&sscanf(p,"-FAULT_MODE=%15s",mode)==1) {
         if (mode[0]=='1'||mode[0]=='C'||mode[0]=='c') fault->continuous=1;
     }
@@ -476,12 +518,12 @@ static int ppp_fault_epoch(gtime_t time)
     }
     return epoch<0?0:epoch;
 }
-/* test whether current observation should be injected -----------------------*/
+/* test whether current satellite and epoch should be injected ---------------*/
 static int ppp_fault_active(const ppp_fault_opt_t *fault, int epoch, int sat)
 {
-    int prn=0;
+    int i,prn=0;
     
-    if (!fault->enable||fault->mag==0.0||fault->obs!='P') return 0;
+    if (!fault->enable||fault->mag==0.0) return 0;
     
     if (fault->continuous) {
         if (epoch<fault->epoch0||epoch>fault->epoch1) return 0;
@@ -489,8 +531,44 @@ static int ppp_fault_active(const ppp_fault_opt_t *fault, int epoch, int sat)
     else if (epoch!=fault->epoch0) return 0;
     
     satsys(sat,&prn);
+    if (fault->nsat>0) {
+        for (i=0;i<fault->nsat;i++) {
+            if (fault->sats[i]==sat||fault->sats[i]==prn) return 1;
+        }
+        return 0;
+    }
     if (fault->sat>0&&fault->sat!=sat&&fault->sat!=prn) return 0;
     
+    return 1;
+}
+/* test whether current residual type should be injected ---------------------*/
+static int ppp_fault_obs_match(const ppp_fault_opt_t *fault, int j)
+{
+    return fault->obs=='A'||(fault->obs=='L'&&j%2==0)||
+           (fault->obs=='P'&&j%2==1);
+}
+/* inject configured gross error into PPP residual ---------------------------
+ * This function is called after v[nv] has been formed and before filter().
+ * The raw obs[i].P/L measurements are not modified. fault->mag is in meters
+ * because PPP phase/code residuals are already expressed in meters. */
+static int ppp_fault_inject_res(const ppp_fault_opt_t *fault, int epoch, int sat,
+                                int j, int post, const prcopt_t *opt,
+                                const char *str, double *res)
+{
+    double r0;
+    int prn=0;
+    const char *type;
+    
+    if (post||!res) return 0;
+    if (!ppp_fault_active(fault,epoch,sat)||!ppp_fault_obs_match(fault,j)) return 0;
+    
+    r0=*res;
+    *res+=fault->mag;
+    satsys(sat,&prn);
+    type=opt->ionoopt==IONOOPT_IFLC?(j%2==0?"LC":"PC"):(j%2==0?"L":"P");
+    trace(2,"%s FAULT_INJ: epoch=%d sat=%2d prn=%2d type=%s%d mode=%s mag=%8.3f before=%12.4f after=%12.4f\n",
+          str,epoch,sat,prn,type,j/2+1,fault->continuous?"CONT":"ONCE",
+          fault->mag,r0,*res);
     return 1;
 }
 /* adaptive robust test for PPP ---------------------------------------------
@@ -513,9 +591,9 @@ static int arekf_ppp(rtk_t *rtk, const double *P,
     const double k_thres=0.10; /* chi-square 门限缩放系数，便于实验阶段快速调参 */
     double *F=NULL,*S=NULL,*Sinv=NULL,*w=NULL;
     double d=0.0,thres_g=0.0,thres_l=0.0,beta_g=1.0,beta_i=1.0,beta_max=1.0;
-    double sii,di;
+    double sii,di,di_max=0.0,di_ratio=0.0,v_max=0.0,sii_max=0.0;
     char tstr[32];
-    int i,info,applied=0,nadj=0;
+    int i,info,applied=0,nadj=0,imax=-1,nge50=0,nge80=0;
     
     /* 如需通过配置开关启用，可恢复下面这句判断 */
     if (!strstr(rtk->opt.pppopt,"-AREKF")||nv<=0) return 0;
@@ -561,6 +639,12 @@ static int arekf_ppp(rtk_t *rtk, const double *P,
             if (sii<=0.0) continue;
             
             di=SQR(v[i])/sii;
+            /* Diagnostic only: record how close each observation is to the trigger. */
+            if (di>di_max) {
+                di_max=di; imax=i; v_max=v[i]; sii_max=sii;
+            }
+            if (di>0.5*thres_l) nge50++;
+            if (di>0.8*thres_l) nge80++;
             if (di<=thres_l) continue;
             
             beta_i=MAX(1.0,di/thres_l);
@@ -574,8 +658,14 @@ static int arekf_ppp(rtk_t *rtk, const double *P,
         }
     }
     /* 输出整体统计量和逐观测放缩摘要，便于验证是否真正触发了逐观测 AREKF */
-    trace(3,"%s AREKF: nv=%d d=%.3f thres=%.3f beta_g=%.3f thres1=%.3f nadj=%d beta_max=%.3f applied=%d\n",
-          tstr,nv,d,thres_g,beta_g,thres_l,nadj,beta_max,applied);
+    di_ratio=thres_l>0.0?di_max/thres_l:0.0;
+    trace(2,"%s AREKF: nv=%d d=%.3f thres=%.3f beta_g=%.3f thres1=%.3f nadj=%d beta_max=%.3f applied=%d max_obs=%d max_di=%.3f max_ratio=%.3f max_v=%.4f max_sii=%.4e n50=%d n80=%d\n",
+          tstr,nv,d,thres_g,beta_g,thres_l,nadj,beta_max,applied,
+          imax+1,di_max,di_ratio,v_max,sii_max,nge50,nge80);
+    if (beta_g>1.0&&nadj==0) {
+        trace(2,"%s AREKF_WARN: global test exceeded but no R update max_obs=%d max_di=%.3f thres1=%.3f ratio=%.3f gap=%.3f\n",
+              tstr,imax+1,di_max,thres_l,di_ratio,thres_l-di_max);
+    }
     
     free(F); free(S); free(Sinv); free(w);
     return applied;
@@ -1185,7 +1275,8 @@ static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
     double ve[MAXOBS*2*NFREQ]={0},vmax=0;
     char str[32];
     int ne=0,obsi[MAXOBS*2*NFREQ]={0},frqi[MAXOBS*2*NFREQ],maxobs,maxfrq,rej;
-    int epoch=0,prn=0;
+    int fault_seen[MAXSAT]={0};
+    int epoch=0,fault_hit=0,fault_inj=0;
     int i,j,k,sat,sys,nv=0,nx=rtk->nx,stat=1;
     
     time2str(obs[0].time,str,2);
@@ -1264,19 +1355,6 @@ static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
                 if ((freq=sat2freq(sat,obs[i].code[j/2],nav))==0.0) continue;
                 C=SQR(FREQ1/freq)*ionmapf(pos,azel+i*2)*(j%2==0?-1.0:1.0);
             }
-            /* Inject a configurable gross error into pseudorange only.
-             * The offset is added after PPP measurement correction and before
-             * residual formation, so the original PPP observation model stays intact. */
-            if (j%2==1&&ppp_fault_active(&fault,epoch,sat)) {
-                double y0=y;
-                y+=fault.mag;
-                if (!post) {
-                    satsys(sat,&prn);
-                    trace(2,"%s FAULT_INJ: epoch=%d sat=%2d prn=%2d type=%s%d mode=%s mag=%8.3f before=%12.4f after=%12.4f\n",
-                          str,epoch,sat,prn,opt->ionoopt==IONOOPT_IFLC?"PC":"P",
-                          j/2+1,fault.continuous?"CONT":"ONCE",fault.mag,y0,y);
-                }
-            }
             for (k=0;k<nx;k++) H[k+nx*nv]=k<3?-e[k]:0.0;//1.H阵每行的前三个值是卫地距方向向量，1-3列是位置改正项xyz
             
             /* receiver clock */
@@ -1319,7 +1397,14 @@ static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
 
 
             /* residual */
-            v[nv]=y-(r+cdtr-CLIGHT*dts[i*2]+dtrp+C*dion+dcb+bias);//残差（一行相位‘s一行伪距）IF组合的参数C=0
+            v[nv]=y-(r+cdtr-CLIGHT*dts[i*2]+dtrp+C*dion+dcb+bias);
+            if (!post&&ppp_fault_active(&fault,epoch,sat)&&
+                ppp_fault_obs_match(&fault,j)&&sat>=1&&sat<=MAXSAT&&
+                !fault_seen[sat-1]) {
+                fault_seen[sat-1]=1;
+                fault_hit++;
+            }
+            fault_inj+=ppp_fault_inject_res(&fault,epoch,sat,j,post,opt,str,v+nv);
             
 
             trace(2, "[DEBUG] sat=%2d freq=%d type=%s y=%.4f r=%.4f cdtr=%.4f dts=%.4f dtrp=%.4f dion=%.4f dcb=%.4f bias=%.4f -> v=%.4f\n",
@@ -1364,6 +1449,11 @@ static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
             post,str,sat,maxfrq%2?"P":"L",maxfrq/2+1,vmax,azel[1+maxobs*2]*R2D);
         exc[maxobs]=1; rtk->ssat[sat-1].rejc[maxfrq%2]++; stat=0;  //只要大于四倍std残差没有全部剔除完，就来到此处，stat会被置0
         ve[rej]=0;
+    }
+    if (!post&&fault.enable) {
+        trace(2,"%s FAULT_SUM: targets=%d hit_sats=%d injected=%d epoch=%d\n",
+              str,fault.nsat>0?fault.nsat:(fault.sat>0?1:0),fault_hit,
+              fault_inj,epoch);
     }
     for (i=0;i<nv;i++) for (j=0;j<nv;j++) {//利用方差构造R阵（方差用到了高度角模型，R阵是对角阵），这里就是取权重
         R[i+j*nv]=i==j?var[i]:0.0;
