@@ -588,9 +588,9 @@ static int ppp_fault_inject_res(const ppp_fault_opt_t *fault, int epoch, int sat
 static int arekf_ppp(rtk_t *rtk, const double *P,
                      const double *H, const double *v, double *R, int nv)
 {
-    const double k_thres=0.10; /* chi-square 门限缩放系数，便于实验阶段快速调参 */
+    const double k_thres=0.20; /* chi-square 门限缩放系数，便于实验阶段快速调参 */
     double *F=NULL,*S=NULL,*Sinv=NULL,*w=NULL;
-    double d=0.0,thres_g=0.0,thres_l=0.0,beta_g=1.0,beta_i=1.0,beta_max=1.0;
+    double d=0.0,thres_g=0.0,thres_l=0.0,beta_g=1.0,beta_max=1.0;
     double sii,di,di_max=0.0,di_ratio=0.0,v_max=0.0,sii_max=0.0;
     char tstr[32];
     int i,info,applied=0,nadj=0,imax=-1,nge50=0,nge80=0;
@@ -625,47 +625,49 @@ static int arekf_ppp(rtk_t *rtk, const double *P,
     
     thres_g=k_thres*chi2_thres_arekf(nv);
     thres_l=k_thres*chi2_thres_arekf(1);
+    time2str(rtk->sol.time,tstr,2);
+    /* Log the AREKF threshold scale used in this run. This helps verify
+     * whether the experiment is using the intended chi-square sensitivity. */
+    trace(2,"%s AREKF_CONF: k_thres=%.3f chi2_nv=%.3f thres=%.3f chi2_1=%.3f thres1=%.3f nv=%d\n",
+          tstr,k_thres,chi2_thres_arekf(nv),thres_g,chi2_thres_arekf(1),thres_l,nv);
     if (thres_g>0.0&&d>thres_g) {
         beta_g=MAX(1.0,d/thres_g);
     }
-    time2str(rtk->sol.time,tstr,2);
     
-    /* PPP 的 R 本来就是对角阵，这里按观测逐条调整对角元 R[i,i]。
-     * di=v_i^2/S_ii 可看作单观测标准化残差统计量。
-     * 只有当前观测异常时才放大对应的测量噪声，避免整批观测一起降权。 */
+    /* Diagnostic only: keep the per-observation statistic for later analysis.
+     * This is not used to decide the R update in the paper-like AREKF mode.
+     * The paper AREKF uses the global Mahalanobis distance d to scale R. */
     if (thres_l>0.0) {
         for (i=0;i<nv;i++) {
             sii=S[i+i*nv];
             if (sii<=0.0) continue;
             
             di=SQR(v[i])/sii;
-            /* Diagnostic only: record how close each observation is to the trigger. */
             if (di>di_max) {
                 di_max=di; imax=i; v_max=v[i]; sii_max=sii;
             }
             if (di>0.5*thres_l) nge50++;
             if (di>0.8*thres_l) nge80++;
-            if (di<=thres_l) continue;
-            
-            beta_i=MAX(1.0,di/thres_l);
-            R[i+i*nv]*=beta_i;
-            if (beta_max<beta_i) beta_max=beta_i;
-            nadj++;
-            applied=1;
-            
-            trace(4,"%s AREKF obs=%d v=%9.4f sii=%9.4e di=%8.3f beta_i=%8.3f\n",
-                  tstr,i+1,v[i],sii,di,beta_i);
         }
     }
-    /* 输出整体统计量和逐观测放缩摘要，便于验证是否真正触发了逐观测 AREKF */
+    /* Paper-like AREKF update:
+     * If the global Mahalanobis distance exceeds the chi-square threshold,
+     * scale the whole measurement covariance R by beta_g=d/thres_g.
+     * RTKLIB PPP builds R as a diagonal matrix in ppp_res(), so scaling all
+     * diagonal elements reduces the weight of the whole current epoch while
+     * keeping the original PPP observation model unchanged. */
+    if (thres_g>0.0&&d>thres_g) {
+        for (i=0;i<nv;i++) R[i+i*nv]*=beta_g;
+        beta_max=beta_g;
+        nadj=nv;
+        applied=1;
+    }
+    /* Output both the paper-like global scaling result and the diagnostic
+     * per-observation statistic. max_ratio<1 no longer prevents R scaling. */
     di_ratio=thres_l>0.0?di_max/thres_l:0.0;
-    trace(2,"%s AREKF: nv=%d d=%.3f thres=%.3f beta_g=%.3f thres1=%.3f nadj=%d beta_max=%.3f applied=%d max_obs=%d max_di=%.3f max_ratio=%.3f max_v=%.4f max_sii=%.4e n50=%d n80=%d\n",
+    trace(2,"%s AREKF: mode=GLOBAL nv=%d d=%.3f thres=%.3f beta_g=%.3f thres1=%.3f nadj=%d beta_max=%.3f applied=%d max_obs=%d max_di=%.3f max_ratio=%.3f max_v=%.4f max_sii=%.4e n50=%d n80=%d\n",
           tstr,nv,d,thres_g,beta_g,thres_l,nadj,beta_max,applied,
           imax+1,di_max,di_ratio,v_max,sii_max,nge50,nge80);
-    if (beta_g>1.0&&nadj==0) {
-        trace(2,"%s AREKF_WARN: global test exceeded but no R update max_obs=%d max_di=%.3f thres1=%.3f ratio=%.3f gap=%.3f\n",
-              tstr,imax+1,di_max,thres_l,di_ratio,thres_l-di_max);
-    }
     
     free(F); free(S); free(Sinv); free(w);
     return applied;
