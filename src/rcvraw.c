@@ -50,6 +50,7 @@
 *                           use integer types in stdint.h
 *-----------------------------------------------------------------------------*/
 #include "rtklib.h"
+#include "rcv/unicore.h"
 
 #define P2_8        0.00390625            /* 2^-8 */
 #define P2_15       3.051757812500000E-05 /* 2^-15 */
@@ -1605,6 +1606,11 @@ extern int init_raw(raw_t *raw, int format)
     raw->format=format;
     switch (format) {
         case STRFMT_RT17: ret=init_rt17(raw); break;
+        /*
+         * Stage 3C: Unicore B2b keeps MASK and decoder context under
+         * raw->rcv_data, so each raw_t owns an independent receiver state.
+         */
+        case STRFMT_UNICORE: ret=init_unicore_b2b(raw); break;
     }
     if (!ret) {
         free_raw(raw);
@@ -1631,6 +1637,11 @@ extern void free_raw(raw_t *raw)
     /* free receiver dependent data */
     switch (raw->format) {
         case STRFMT_RT17: free_rt17(raw); break;
+        /*
+         * Release the receiver-local MASK/context allocated by init_raw().
+         * free_unicore_b2b() clears raw->rcv_data to prevent stale reuse.
+         */
+        case STRFMT_UNICORE: free_unicore_b2b(raw); break;
     }
     raw->rcv_data=NULL;
 }
@@ -1659,6 +1670,11 @@ extern int input_raw(raw_t *raw, int format, uint8_t data)
         case STRFMT_BINEX : return input_bnx   (raw,data);
         case STRFMT_RT17  : return input_rt17  (raw,data);
         case STRFMT_SEPT  : return input_sbf   (raw,data);
+        /*
+         * Stage 3C only dispatches Unicore bytes to the B2b receiver decoder.
+         * Decoded products remain in raw->nav.B2bssr[sat], not nav->ssr[].
+         */
+        case STRFMT_UNICORE: return input_unicore(raw,data);
     }
     return 0;
 }
@@ -1685,6 +1701,11 @@ extern int input_rawf(raw_t *raw, int format, FILE *fp)
         case STRFMT_BINEX : return input_bnxf   (raw,fp);
         case STRFMT_RT17  : return input_rt17f  (raw,fp);
         case STRFMT_SEPT  : return input_sbff   (raw,fp);
+        /*
+         * File replay uses the same byte decoder as realtime input; the file
+         * wrapper only reads bytes and preserves input_unicore() return values.
+         */
+        case STRFMT_UNICORE: return input_unicoref(raw,fp);
     }
     return -2;
 }

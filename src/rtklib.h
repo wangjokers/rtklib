@@ -222,6 +222,18 @@ extern "C" {
                                         /* max satellite number (1 to MAXSAT) */
 #define MAXSTA      255
 
+/* PPP-B2b broadcast slot ranges. The slot order is used by MASK and CLOCK
+ * messages before slots are mapped to RTKLIB satellite numbers by
+ * b2b_slot2satno(). */
+#define B2B_BDS_MINSAT 1
+#define B2B_BDS_MAXSAT 63
+#define B2B_GPS_MINSAT 64
+#define B2B_GPS_MAXSAT 100
+#define B2B_GAL_MINSAT 101
+#define B2B_GAL_MAXSAT 137
+#define B2B_GLO_MINSAT 138
+#define B2B_GLO_MAXSAT 174
+#define B2B_MAXSAT     174
 #ifndef MAXOBS
 #define MAXOBS      96                  /* max number of obs in an epoch */
 #endif
@@ -458,6 +470,7 @@ extern "C" {
 #define STRFMT_RNXCLK 15                /* stream format: RINEX CLK */
 #define STRFMT_SBAS  16                 /* stream format: SBAS messages */
 #define STRFMT_NMEA  17                 /* stream format: NMEA 0183 */
+#define STRFMT_UNICORE 18               /* stream format: Unicore UM980/UM982 B2b */
 #define MAXRCVFMT    12                 /* max number of receiver format */
 
 #define STR_MODE_R  0x1                 /* stream mode: read */
@@ -787,6 +800,36 @@ typedef struct {        /* SSR correction type */
     uint8_t update;     /* update flag (0:no update,1:update) */
 } ssr_t;
 
+typedef struct {        /* PPP-B2b MASK message state */
+    gtime_t recv_time;  /* receiver/header time of the MASK message (GPST) */
+    gtime_t ref_time;   /* B2b reference epoch converted from BDT SOD to GPST */
+    int MASK_BD[63];    /* BeiDou mask bits in B2b slot order */
+    int MASK_GPS[37];   /* GPS mask bits in B2b slot order */
+    int MASK_GAL[37];   /* Galileo mask bits in B2b slot order */
+    int MASK_GLO[37];   /* GLONASS mask bits in B2b slot order */
+    int IOD_SSR;        /* issue of data SSR; orbit/code/clock must match it */
+    int IODP;           /* issue of data positioning; clock also matches it */
+    int satnum;         /* number of valid RTKLIB satellite numbers in satno[] */
+    int satno[B2B_MAXSAT]; /* B2b MASK slots mapped to RTKLIB satellite numbers */
+} B2bmask_t;
+
+typedef struct {        /* PPP-B2b SSR correction type */
+    int sow;            /* raw B2b second-of-day/second-of-week style payload time */
+    int verify_sow;     /* debug SOW after full-time conversion, for decoder checks */
+    gtime_t t0[6];      /* epoch time (GPST) {orbit,cbias,clock,ura,reserved...} */
+    double udi[6];      /* update interval (s) {orbit,cbias,clock,ura,reserved...} */
+    int iodssr[6];      /* B2b IOD SSR by product type */
+    int iodp[2];        /* B2b IODP values, currently used by clock/URA paths */
+    int iodn;           /* broadcast ephemeris IODN/IODC paired with B2b orbit */
+    uint16_t iodcorr[4]; /* correction IOD {orbit,clock,reserved...} */
+    double deph [3];    /* delta orbit {radial,along,cross} (m) */
+    double ddeph[3];    /* dot delta orbit {radial,along,cross} (m/s) */
+    int ura;            /* B2b URAI/URA indicator */
+    float  cbias[MAXCODE+1]; /* code biases indexed by RTKLIB CODE_*; index 0 unused */
+    double dclk [3];    /* delta clock {c0,c1,c2} (m,m/s,m/s^2) */
+    int update;         /* update flag (0:no update,1:new B2b product) */
+} B2bssr_t;
+
 typedef struct {        /* navigation data type */
     int n,nmax;         /* number of broadcast ephemeris */
     int ng,ngmax;       /* number of glonass ephemeris */
@@ -823,6 +866,12 @@ typedef struct {        /* navigation data type */
     sbsion_t sbsion[MAXBAND+1]; /* SBAS ionosphere corrections */
     dgps_t dgps[MAXSAT]; /* DGPS corrections */
     ssr_t ssr[MAXSAT];  /* SSR corrections */
+    /*
+     * PPP-B2b corrections use [sat] indexing by design: sat runs from 1 to
+     * MAXSAT and element 0 is unused. WARNING: this differs from the standard
+     * RTKLIB SSR convention nav->ssr[sat-1].
+     */
+    B2bssr_t B2bssr[MAXSAT+1];
 } nav_t;
 
 typedef struct {        /* station parameter type */
@@ -1372,6 +1421,11 @@ EXPORT gtime_t timeget  (void);
 EXPORT void    timeset  (gtime_t t);
 EXPORT void    timereset(void);
 EXPORT double  time2doy (gtime_t t);
+
+/* PPP-B2b common helper functions ------------------------------------------*/
+EXPORT int     b2b_slot2satno(int slot);
+EXPORT int     b2b_mask2satno(B2bmask_t *mask);
+EXPORT gtime_t b2b_tod2time(gtime_t header_time, double bdt_sod);
 EXPORT double  utc2gmst (gtime_t t, double ut1_utc);
 EXPORT int read_leaps(const char *file);
 
@@ -1569,6 +1623,9 @@ EXPORT int init_cmr   (raw_t *raw);
 EXPORT void free_rt17 (raw_t *raw);
 EXPORT void free_cmr  (raw_t *raw);
 EXPORT int update_cmr (raw_t *raw, rtksvr_t *svr, obs_t *obs);
+EXPORT int init_unicore_b2b(raw_t *raw);
+EXPORT void free_unicore_b2b(raw_t *raw);
+EXPORT const B2bmask_t *unicore_b2b_mask(const raw_t *raw);
 
 EXPORT int input_oem4  (raw_t *raw, uint8_t data);
 EXPORT int input_oem3  (raw_t *raw, uint8_t data);
@@ -1581,6 +1638,7 @@ EXPORT int input_nvs   (raw_t *raw, uint8_t data);
 EXPORT int input_bnx   (raw_t *raw, uint8_t data);
 EXPORT int input_rt17  (raw_t *raw, uint8_t data);
 EXPORT int input_sbf   (raw_t *raw, uint8_t data);
+EXPORT int input_unicore(raw_t *raw, uint8_t data);
 EXPORT int input_oem4f (raw_t *raw, FILE *fp);
 EXPORT int input_oem3f (raw_t *raw, FILE *fp);
 EXPORT int input_ubxf  (raw_t *raw, FILE *fp);
@@ -1592,6 +1650,7 @@ EXPORT int input_nvsf  (raw_t *raw, FILE *fp);
 EXPORT int input_bnxf  (raw_t *raw, FILE *fp);
 EXPORT int input_rt17f (raw_t *raw, FILE *fp);
 EXPORT int input_sbff  (raw_t *raw, FILE *fp);
+EXPORT int input_unicoref(raw_t *raw, FILE *fp);
 
 EXPORT int gen_ubx (const char *msg, uint8_t *buff);
 EXPORT int gen_stq (const char *msg, uint8_t *buff);
