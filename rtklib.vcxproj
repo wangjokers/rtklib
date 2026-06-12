@@ -132,6 +132,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="src\b2b.c" />
     <ClCompile Include="src\convgpx.c" />
     <ClCompile Include="src\convkml.c" />
     <ClCompile Include="src\convrnx.c" />
@@ -161,6 +162,7 @@
     <ClCompile Include="src\rcv\skytraq.c" />
     <ClCompile Include="src\rcv\ss2.c" />
     <ClCompile Include="src\rcv\ublox.c" />
+    <ClCompile Include="src\rcv\unicore.c" />
     <ClCompile Include="src\rinex.c" />
     <ClCompile Include="src\rnx2rtkp.c" />
     <ClCompile Include="src\rtcm.c" />

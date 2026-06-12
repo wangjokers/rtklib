@@ -21,6 +21,9 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="src\b2b.c">
+      <Filter>源文件\src</Filter>
+    </ClCompile>
     <ClCompile Include="src\rcv\binex.c">
       <Filter>源文件\src\rcv</Filter>
     </ClCompile>
@@ -49,6 +52,9 @@
       <Filter>源文件\src\rcv</Filter>
     </ClCompile>
     <ClCompile Include="src\rcv\ublox.c">
+      <Filter>源文件\src\rcv</Filter>
+    </ClCompile>
+    <ClCompile Include="src\rcv\unicore.c">
       <Filter>源文件\src\rcv</Filter>
     </ClCompile>
     <ClCompile Include="src\convgpx.c">

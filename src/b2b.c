@@ -1,9 +1,9 @@
 /*------------------------------------------------------------------------------
 * b2b.c : PPP-B2b common structures helpers
 *
-* This file is the stage 3A landing point for B2b helpers shared by future
-* receiver decoders and nav update code. It intentionally does not contain a
-* Unicore/SinoGNSS decoder, raw dispatch, nav update, or PPP correction logic.
+* This file contains B2b helpers shared by receiver decoders and the controlled
+* raw-to-main-nav update path. Receiver framing and PPP correction application
+* remain outside this module.
 *-----------------------------------------------------------------------------*/
 #include "rtklib.h"
 
@@ -19,11 +19,11 @@ static void merge_b2b_mask_arrays(const B2bmask_t *mask, int *merged)
 }
 
 /* convert PPP-B2b broadcast slot to RTKLIB satellite number ------------------
-*
-* B2b MASK/CLOCK messages address satellites by B2b slot, not by RTKLIB's
-* compact sat number. The slot ranges are ordered as BDS, GPS, Galileo and
-* GLONASS. satno() performs the final check against the systems enabled at
-* compile time, so slots outside the local RTKLIB build return 0.
+* convert a PPP-B2b broadcast slot to an RTKLIB satellite number
+* args   : int       slot        I   PPP-B2b slot number (1-174)
+* return : RTKLIB satellite number (0: invalid or disabled satellite system)
+* notes  : B2b slot order is BDS, GPS, Galileo and GLONASS. satno() performs
+*          the final check against systems enabled at compile time.
 *-----------------------------------------------------------------------------*/
 extern int b2b_slot2satno(int slot)
 {
@@ -48,10 +48,12 @@ extern int b2b_slot2satno(int slot)
 }
 
 /* convert a PPP-B2b MASK to RTKLIB satellite numbers -------------------------
-*
-* The receiver decoder keeps the latest MASK in B2bmask_t. Orbit and code-bias
-* messages carry explicit slots, while CLOCK messages often carry an index into
-* this MASK list. b2b_mask2satno() prepares that list once after every MASK.
+* convert active slots in a PPP-B2b MASK to RTKLIB satellite numbers
+* args   : B2bmask_t *mask       IO  receiver-local PPP-B2b MASK state
+* return : number of valid satellites stored in mask->satno[] (0: error/none)
+* notes  : mask->satno[] is rebuilt in B2b slot order and mask->satnum is
+*          updated. CLOCK messages use this receiver-local list for slot-index
+*          lookup.
 *-----------------------------------------------------------------------------*/
 extern int b2b_mask2satno(B2bmask_t *mask)
 {
@@ -74,12 +76,13 @@ extern int b2b_mask2satno(B2bmask_t *mask)
 }
 
 /* convert B2b BDT seconds-of-day to RTKLIB GPST ------------------------------
-*
-* Unicore PPPB2BINFO messages carry the product reference time as BDT
-* seconds-of-day. The receiver frame header already has a full GPST time. This
-* helper converts the header time to BDT calendar date, attaches the payload SOD,
-* fixes cross-day cases with the same half-day rule used in the stage 1 decoder,
-* and converts the result back to GPST for RTKLIB storage.
+* convert PPP-B2b BDT seconds-of-day to a complete RTKLIB GPST epoch
+* args   : gtime_t   header_time I   receiver frame header time (GPST)
+*          double    bdt_sod     I   PPP-B2b payload time (BDT seconds-of-day)
+* return : complete product reference time (GPST), {0} if input is invalid
+* notes  : the BDT calendar date is derived from header_time. A half-day rule
+*          resolves a product epoch that crosses midnight relative to the
+*          receiver frame header.
 *-----------------------------------------------------------------------------*/
 extern gtime_t b2b_tod2time(gtime_t header_time, double bdt_sod)
 {
@@ -106,3 +109,33 @@ extern gtime_t b2b_tod2time(gtime_t header_time, double bdt_sod)
     return bdt2gpst(data_bdt);
 }
 
+/* consume decoded PPP-B2b products into the main navigation object -----------
+* consume receiver-decoded PPP-B2b products into the main navigation object
+* args   : nav_t     *nav         IO  main navigation data
+*          raw_t     *raw         IO  receiver raw data control
+* return : number of satellites transferred in this call (0: no update/error)
+* notes  : only raw->nav.B2bssr[sat] entries with update=1 are copied. The
+*          receiver decoder accumulates orbit, code-bias and clock fields in one
+*          B2bssr_t, so the complete structure is copied to preserve products
+*          arriving in separate messages.
+*
+*          B2b storage uses [sat] indexing: valid indices are 1..MAXSAT and
+*          element 0 is unused. After a successful copy, raw-side update is
+*          cleared and main-nav update remains 1 for downstream observation.
+*-----------------------------------------------------------------------------*/
+extern int b2b_update_nav_from_raw(nav_t *nav, raw_t *raw)
+{
+    int sat,n=0;
+
+    if (!nav||!raw) return 0;
+
+    for (sat=1;sat<=MAXSAT;sat++) {
+        if (!raw->nav.B2bssr[sat].update) continue;
+
+        nav->B2bssr[sat]=raw->nav.B2bssr[sat];
+        nav->B2bssr[sat].update=1;
+        raw->nav.B2bssr[sat].update=0;
+        n++;
+    }
+    return n;
+}

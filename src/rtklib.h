@@ -1426,6 +1426,7 @@ EXPORT double  time2doy (gtime_t t);
 EXPORT int     b2b_slot2satno(int slot);
 EXPORT int     b2b_mask2satno(B2bmask_t *mask);
 EXPORT gtime_t b2b_tod2time(gtime_t header_time, double bdt_sod);
+EXPORT int     b2b_update_nav_from_raw(nav_t *nav, raw_t *raw);
 EXPORT double  utc2gmst (gtime_t t, double ut1_utc);
 EXPORT int read_leaps(const char *file);
 

@@ -302,6 +302,20 @@ static void update_ssr(rtksvr_t *svr, int index)
     }
     svr->nmsg[index][7]++;
 }
+/* update PPP-B2b corrections -------------------------------------------------
+* publish pending receiver-decoded PPP-B2b products to the server navigation
+* args   : rtksvr_t *svr        IO  rtk server
+*          int       index       I   input stream index (0:rover,1:base,2:corr)
+* return : none
+* notes  : b2b_update_nav_from_raw() consumes raw-side update flags. The main
+*          navigation copy keeps update=1 for the later PPP-B2b consumer.
+*-----------------------------------------------------------------------------*/
+static void update_b2b_ssr(rtksvr_t *svr, int index)
+{
+    int n=b2b_update_nav_from_raw(&svr->nav,svr->raw+index);
+
+    if (n>0) svr->nmsg[index][8]++;
+}
 /* update rtk server struct --------------------------------------------------*/
 static void update_svr(rtksvr_t *svr, int ret, obs_t *obs, nav_t *nav,
                        int ephsat, int ephset, sbsmsg_t *sbsmsg, int index,
@@ -330,6 +344,10 @@ static void update_svr(rtksvr_t *svr, int ret, obs_t *obs, nav_t *nav,
     }
     else if (ret==10) { /* ssr message */
         update_ssr(svr,index);
+    }
+    else if (ret==20&&svr->format[index]==STRFMT_UNICORE) {
+        /* PPP-B2b SSR message (RTCM SSR phase bias also uses return code 20) */
+        update_b2b_ssr(svr,index);
     }
     else if (ret==-1) { /* error */
         svr->nmsg[index][9]++;
