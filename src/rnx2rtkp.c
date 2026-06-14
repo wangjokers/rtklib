@@ -191,12 +191,6 @@ int main(int argc, char **argv)
     ////infile[3] = "D:\\Desktop\\demo04\\test01\\WUM0MGXFIN_20192740000_01D_30S_CLK.CLK";
     //outfile = "D:\\Desktop\\demo04\\test01\\chan_source_cmpbds.pos";
     //3.04版本用混合系统包含北斗的进行测试
-    n = 4;
-    infile[0] = "D:\\Desktop\\rtk—learn\\rtklib\\data04_text\\202501\\ABPO\\ABPO00MDG_R_20250010000_01D_30S_MO.25o";
-    infile[1] = "D:\\Desktop\\rtk—learn\\rtklib\\data04_text\\202501\\BRDC00IGS_R_20250010000_01D_MN.rnx";
-    infile[2] = "D:\\Desktop\\rtk—learn\\rtklib\\data04_text\\202501\\COD0MGXFIN_20250010000_01D_05M_ORB.SP3";
-    infile[3] = "D:\\Desktop\\rtk—learn\\rtklib\\data04_text\\202501\\COD0MGXFIN_20250010000_01D_30S_CLK.CLK";
-    outfile = "D:\\Desktop\\rtk—learn\\rtklib\\data04_text\\202501\\ABPO\\fault_demo01_118_120_128_L0.20_k_thres=0.20 arekf_ABPO_b1c_b2a_2025001_gps_bds.pos";
     //igmas版本的开发
     //用林提供的数据运行发现运行失败，只选中北斗无数据，加了gps发现解算的数据质量不好，中间丢失了大块的时间段
     

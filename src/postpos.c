@@ -79,6 +79,93 @@ static char rtcm_path[1024]=""; /* rtcm data path */
 static rtcm_t rtcm;             /* rtcm control struct */
 static FILE *fp_rtcm=NULL;      /* rtcm data file pointer */
 
+typedef struct {
+    raw_t raw;                  /* Unicore receiver decoder state */
+    FILE *fp;                   /* current B2b raw file */
+    char path[MAXSTRPATH];      /* current B2b raw file path */
+    int format;                 /* receiver raw format */
+    int initialized;            /* raw decoder initialization state */
+    int eof;                    /* end-of-file state */
+    int pending;                /* one decoded future frame is pending */
+    gtime_t pending_rx_time;    /* receiver time of pending frame */
+} b2b_replay_t;
+
+/* identify a Stage 4B post-processing B2b raw input -------------------------*/
+extern int b2b_replay_input_format(const char *path)
+{
+    const char *ext;
+
+    if (!path||!(ext=strrchr(path,'.'))) return -1;
+    if (!strcmp(ext,".B2bBin")||!strcmp(ext,".b2b")||
+        !strcmp(ext,".B2b")) return STRFMT_UNICORE;
+    return -1;
+}
+/* close one post-processing B2b replay session -----------------------------*/
+extern void b2b_replay_close(b2b_replay_t *replay)
+{
+    if (!replay) return;
+    if (replay->fp) fclose(replay->fp);
+    if (replay->initialized) free_raw(&replay->raw);
+    memset(replay,0,sizeof(*replay));
+}
+/* open one post-processing B2b replay session ------------------------------*/
+extern int b2b_replay_open(b2b_replay_t *replay, const char *path, int format)
+{
+    if (!replay||!path||format!=STRFMT_UNICORE) return 0;
+
+    memset(replay,0,sizeof(*replay));
+    replay->format=format;
+    strncpy(replay->path,path,sizeof(replay->path)-1);
+    replay->path[sizeof(replay->path)-1]='\0';
+
+    if (!init_raw(&replay->raw,format)) {
+        memset(replay,0,sizeof(*replay));
+        return 0;
+    }
+    replay->initialized=1;
+    if (!(replay->fp=fopen(path,"rb"))) {
+        b2b_replay_close(replay);
+        return 0;
+    }
+    return 1;
+}
+/* publish only B2b frames available at the current observation epoch -------*/
+extern int b2b_replay_update(b2b_replay_t *replay, nav_t *nav,
+                             gtime_t obs_time)
+{
+    int ret,n=0;
+
+    if (!replay||!nav||!replay->fp) return 0;
+
+    if (replay->pending) {
+        if (timediff(replay->pending_rx_time,obs_time)>DTTOL) return 0;
+        n+=b2b_update_nav_from_raw(nav,&replay->raw);
+        replay->pending=0;
+        replay->pending_rx_time.time=0;
+        replay->pending_rx_time.sec=0.0;
+    }
+    while (!replay->eof) {
+        ret=input_rawf(&replay->raw,replay->format,replay->fp);
+        if (ret==-2) {
+            replay->eof=1;
+            break;
+        }
+        if (ret<0) {
+            trace(2,"B2b replay decode error: path=%s\n",replay->path);
+            return -1;
+        }
+        if (ret==0) continue;
+
+        if (timediff(replay->raw.time,obs_time)>DTTOL) {
+            replay->pending=1;
+            replay->pending_rx_time=replay->raw.time;
+            break;
+        }
+        n+=b2b_update_nav_from_raw(nav,&replay->raw);
+    }
+    return n;
+}
+
 /* show message and check break ----------------------------------------------*/
 static int checkbrk(const char *format, ...)
 {
@@ -234,7 +321,8 @@ static void update_rtcm_ssr(gtime_t time)
     }
 }
 /* input obs data, navigation messages and sbas correction -------------------*/
-static int inputobs(obsd_t *obs, int solq, const prcopt_t *popt)
+static int inputobs(obsd_t *obs, int solq, const prcopt_t *popt,
+                    b2b_replay_t *b2b)
 {
     gtime_t time={0};
     int i,nu,nr,n=0;
@@ -278,6 +366,10 @@ static int inputobs(obsd_t *obs, int solq, const prcopt_t *popt)
         /* update rtcm ssr corrections */
         if (*rtcm_file) {
             update_rtcm_ssr(obs[0].time);
+        }
+        if (b2b&&b2b_replay_update(b2b,&navs,obs[0].time)<0) {
+            trace(2,"B2b replay stopped at observation epoch: %s\n",
+                  time_str(obs[0].time,3));
         }
     }
     else { /* input backward data */
@@ -476,7 +568,7 @@ static void inject_multisat_pseudorange_fault(obsd_t *obs, int n,
 }
 /* process positioning -------------------------------------------------------*/
 static void procpos(FILE *fp, const prcopt_t *popt, const solopt_t *sopt,
-                    int mode)
+                    int mode, b2b_replay_t *b2b)
 {
     gtime_t time={0};
     sol_t sol={{0}};
@@ -493,7 +585,7 @@ static void procpos(FILE *fp, const prcopt_t *popt, const solopt_t *sopt,
     rtkinit(&rtk,popt);
     rtcm_path[0]='\0';
     
-    while ((nobs=inputobs(obs,rtk.sol.stat,popt))>=0) {//读取o文件下一个历元所有卫星的数据（所有系统的卫星都读）
+    while ((nobs=inputobs(obs,rtk.sol.stat,popt,b2b))>=0) {//读取o文件下一个历元所有卫星的数据（所有系统的卫星都读）
         
         /* exclude satellites */
         for (i=n=0;i<nobs;i++) {
@@ -692,16 +784,19 @@ static void readpreceph(char **infile, int n, const prcopt_t *prcopt,
     
     /* read precise ephemeris files */
     for (i=0;i<n;i++) {//过滤掉包含 %r 或 %b 的文件（通常用于表示基站和流动站文件），并调用 readsp3 函数读取精密星历数据
+        if (b2b_replay_input_format(infile[i])>=0) continue;
         if (strstr(infile[i],"%r")||strstr(infile[i],"%b")) continue;
         readsp3(infile[i],nav,0);
     }
     /* read precise clock files */
     for (i=0;i<n;i++) {
+        if (b2b_replay_input_format(infile[i])>=0) continue;
         if (strstr(infile[i],"%r")||strstr(infile[i],"%b")) continue;
         readrnxc(infile[i],nav);
     }
     /* read sbas message files */
     for (i=0;i<n;i++) {
+        if (b2b_replay_input_format(infile[i])>=0) continue;
         if (strstr(infile[i],"%r")||strstr(infile[i],"%b")) continue;
         sbsreadmsg(infile[i],prcopt->sbassatsel,sbs);
     }
@@ -763,6 +858,7 @@ static int readobsnav(gtime_t ts, gtime_t te, double ti, char **infile,
     //遍历infile[]，调用readrnxt（）读取文件
     for (i=0;i<n;i++) {
         if (checkbrk("")) return 0;
+        if (b2b_replay_input_format(infile[i])>=0) continue;
         
         if (index[i]!=ind) {         //如果下标和上一次循环的不同
             if (obs->n>nobs) rcv++;  //rcv=1:rover,2:reference
@@ -1082,9 +1178,30 @@ static int execses(gtime_t ts, gtime_t te, double ti, const prcopt_t *popt,
 {
     FILE *fp;
     prcopt_t popt_=*popt;
+    b2b_replay_t *b2b=NULL;
+    const char *b2b_path=NULL;
     char tracefile[1024],statfile[1024],path[1024],*ext;
+    int i,b2b_format=-1,b2b_count=0;
     
     trace(3,"execses : n=%d outfile=%s\n",n,outfile);
+
+    for (i=0;i<n;i++) {
+        int format=b2b_replay_input_format(infile[i]);
+        if (format<0) continue;
+        b2b_path=infile[i];
+        b2b_format=format;
+        b2b_count++;
+    }
+    if (b2b_count>1) {
+        showmsg("error : multiple B2b raw inputs are not supported");
+        trace(1,"multiple B2b raw inputs are not supported\n");
+        return 0;
+    }
+    if (b2b_count>0&&popt_.mode!=PMODE_SINGLE&&popt_.soltype!=0) {
+        showmsg("error : B2b replay supports forward processing only");
+        trace(1,"B2b replay rejected for soltype=%d\n",popt_.soltype);
+        return 0;
+    }
     
     /* open debug trace */
     if (flag&&sopt->trace>0) {
@@ -1161,18 +1278,30 @@ static int execses(gtime_t ts, gtime_t te, double ti, const prcopt_t *popt,
         freeobsnav(&obss,&navs);
         return 0;
     }
+    if (b2b_path) {
+        if (!(b2b=(b2b_replay_t *)calloc(1,sizeof(*b2b)))||
+            !b2b_replay_open(b2b,b2b_path,b2b_format)) {
+            showmsg("error : open B2b raw file %s",b2b_path);
+            trace(1,"B2b raw file open error: %s\n",b2b_path);
+            if (b2b) free(b2b);
+            freeobsnav(&obss,&navs);
+            return 0;
+        }
+        memset(navs.B2bssr,0,sizeof(navs.B2bssr));
+        trace(2,"B2b raw file open: %s format=%d\n",b2b_path,b2b_format);
+    }
     iobsu=iobsr=isbs=revs=aborts=0;
     
     if (popt_.mode==PMODE_SINGLE||popt_.soltype==0) {//当spp或前向滤波时-
         if ((fp=openfile(outfile))) {
-            procpos(fp,&popt_,sopt,0); /* forward */
+            procpos(fp,&popt_,sopt,0,b2b); /* forward */
             fclose(fp);
         }
     }
     else if (popt_.soltype==1) {
         if ((fp=openfile(outfile))) {
             revs=1; iobsu=iobsr=obss.n-1; isbs=sbss.n-1;
-            procpos(fp,&popt_,sopt,0); /* backward */
+            procpos(fp,&popt_,sopt,0,b2b); /* backward */
             fclose(fp);
         }
     }
@@ -1184,9 +1313,9 @@ static int execses(gtime_t ts, gtime_t te, double ti, const prcopt_t *popt,
         
         if (solf&&solb) {
             isolf=isolb=0;
-            procpos(NULL,&popt_,sopt,1); /* forward */
+            procpos(NULL,&popt_,sopt,1,b2b); /* forward */
             revs=1; iobsu=iobsr=obss.n-1; isbs=sbss.n-1;
-            procpos(NULL,&popt_,sopt,1); /* backward */
+            procpos(NULL,&popt_,sopt,1,b2b); /* backward */
             
             /* combine forward/backward solutions */
             if (!aborts&&(fp=openfile(outfile))) {
@@ -1199,6 +1328,10 @@ static int execses(gtime_t ts, gtime_t te, double ti, const prcopt_t *popt,
         free(solb);
         free(rbf);
         free(rbb);
+    }
+    if (b2b) {
+        b2b_replay_close(b2b);
+        free(b2b);
     }
     /* free obs and nav data */
     freeobsnav(&obss,&navs);
