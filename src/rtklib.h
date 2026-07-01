@@ -1427,6 +1427,20 @@ EXPORT int     b2b_slot2satno(int slot);
 EXPORT int     b2b_mask2satno(B2bmask_t *mask);
 EXPORT gtime_t b2b_tod2time(gtime_t header_time, double bdt_sod);
 EXPORT int     b2b_update_nav_from_raw(nav_t *nav, raw_t *raw);
+EXPORT int     b2b_orbit_age_valid(gtime_t time, const B2bssr_t *b2b,
+                                   double *age);
+EXPORT int     b2b_cbias_age_valid(gtime_t time, const B2bssr_t *b2b,
+                                   double *age);
+EXPORT int     b2b_clock_age_valid(gtime_t time, const B2bssr_t *b2b,
+                                   double *age);
+EXPORT int     b2b_orbit_clock_ready(gtime_t time, const B2bssr_t *b2b,
+                                     double *orbit_age, double *clock_age);
+EXPORT int     b2b_urai_variance(int urai, double *variance);
+EXPORT int     b2b_rac_to_ecef(const double *r, const double *v,
+                               const double *rac, double *ecef);
+EXPORT int     b2b_clock_correct(double broadcast_dts, double dclk,
+                                 double *corrected_dts);
+EXPORT int     b2b_clear_nav_updates(nav_t *nav);
 EXPORT double  utc2gmst (gtime_t t, double ut1_utc);
 EXPORT int read_leaps(const char *file);
 
