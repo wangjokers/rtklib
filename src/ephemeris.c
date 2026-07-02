@@ -730,6 +730,150 @@ static int satpos_ssr(gtime_t time, gtime_t teph, int sat, const nav_t *nav,
     
     return 1;
 }
+/* PPP-B2b finite-value guard ------------------------------------------------*/
+static int b2b_satpos_finite(double value)
+{
+    return value==value&&fabs(value)<HUGE_VAL;
+}
+/* PPP-B2b ephemeris age limit by system ------------------------------------*/
+static int b2b_eph_tmax(int sys, double *tmax)
+{
+    if (!tmax) return 0;
+    switch (sys) {
+        case SYS_GPS: *tmax=MAXDTOE+1.0;     return 1;
+        case SYS_CMP: *tmax=MAXDTOE_CMP+1.0; return 1;
+    }
+    *tmax=0.0;
+    return 0;
+}
+/* PPP-B2b IODN match rule ---------------------------------------------------*/
+static int b2b_eph_iodn_match(const eph_t *eph, int sys, int iodn)
+{
+    if (!eph) return 0;
+    if (sys==SYS_GPS) return eph->iode==iodn;
+    if (sys==SYS_CMP) return eph->iodc==iodn;
+    return 0;
+}
+/* select broadcast ephemeris for PPP-B2b ------------------------------------
+* args   : gtime_t time I   ephemeris selection time (GPST)
+*          int     sat  I   RTKLIB satellite number
+*          int     iodn I   PPP-B2b broadcast ephemeris IODN/IODC
+*          nav_t  *nav  I   navigation data
+* return : matched healthy broadcast ephemeris, or NULL
+* notes  : This selector is deliberately separate from seleph(). PPP-B2b must
+*          match the exact broadcast ephemeris generation referenced by IODN:
+*          GPS uses eph.iode and BDS uses eph.iodc. Galileo, GLONASS and other
+*          systems remain disabled until their IODN mapping is verified.
+*-----------------------------------------------------------------------------*/
+static eph_t *seleph_B2b(gtime_t time, int sat, int iodn, const nav_t *nav)
+{
+    double t,tmax,tmin;
+    int i,j=-1,sys=satsys(sat,NULL);
+
+    trace(4,"seleph_B2b: time=%s sat=%2d iodn=%d\n",
+          time_str(time,3),sat,iodn);
+
+    if (!nav||!nav->eph||!b2b_eph_tmax(sys,&tmax)) {
+        trace(3,"unsupported b2b broadcast ephemeris: %s sat=%2d iodn=%d\n",
+              time_str(time,0),sat,iodn);
+        return NULL;
+    }
+    tmin=tmax+1.0;
+
+    for (i=0;i<nav->n;i++) {
+        if (nav->eph[i].sat!=sat) continue;
+        if (nav->eph[i].svh) continue;
+        if (!b2b_eph_iodn_match(nav->eph+i,sys,iodn)) continue;
+        if ((t=fabs(timediff(nav->eph[i].toe,time)))>tmax) continue;
+        if (t<=tmin) {j=i; tmin=t;}
+    }
+    if (j<0) {
+        trace(3,"no b2b broadcast ephemeris: %s sat=%2d iodn=%d\n",
+              time_str(time,0),sat,iodn);
+        return NULL;
+    }
+    return nav->eph+j;
+}
+/* satellite position/clock from one selected broadcast ephemeris ------------*/
+static int ephpos_B2b(gtime_t time, const eph_t *eph, double *rs, double *dts,
+                      double *var, int *svh)
+{
+    double rst[3],dtst[1],tt=1E-3;
+    int i;
+
+    if (!eph||!rs||!dts||!var||!svh) return 0;
+
+    eph2pos(time,eph,rs,dts,var);
+    time=timeadd(time,tt);
+    eph2pos(time,eph,rst,dtst,var);
+    for (i=0;i<3;i++) {
+        rs[i+3]=(rst[i]-rs[i])/tt;
+        if (!b2b_satpos_finite(rs[i])||!b2b_satpos_finite(rs[i+3])) {
+            *svh=-1;
+            return 0;
+        }
+    }
+    dts[1]=(dtst[0]-dts[0])/tt;
+    if (!b2b_satpos_finite(dts[0])||!b2b_satpos_finite(dts[1])) {
+        *svh=-1;
+        return 0;
+    }
+    *svh=eph->svh;
+    return *svh==0;
+}
+/* satellite position and clock with PPP-B2b orbit/clock correction ----------*/
+static int satpos_B2b(gtime_t time, gtime_t teph, int sat, const nav_t *nav,
+                      double *rs, double *dts, double *var, int *svh)
+{
+    const B2bssr_t *b2b;
+    eph_t *eph;
+    double delta[3],variance,orbit_age,clock_age;
+    int i;
+
+    trace(4,"satpos_B2b: time=%s sat=%2d\n",time_str(time,3),sat);
+
+    if (svh) *svh=-1;
+    if (!nav||!rs||!dts||!var||!svh||sat<=0||MAXSAT<sat) return 0;
+
+    b2b=nav->B2bssr+sat; /* WARNING: PPP-B2b storage uses [sat], not [sat-1]. */
+    if (!b2b_orbit_clock_ready(time,b2b,&orbit_age,&clock_age)) {
+        trace(3,"b2b orbit/clock not ready: %s sat=%2d age=%.0f %.0f\n",
+              time_str(time,0),sat,orbit_age,clock_age);
+        return 0;
+    }
+    if (!b2b_urai_variance(b2b->ura,&variance)) {
+        trace(3,"invalid b2b urai: %s sat=%2d urai=%d\n",
+              time_str(time,0),sat,b2b->ura);
+        return 0;
+    }
+    if (!(eph=seleph_B2b(teph,sat,b2b->iodn,nav))) return 0;
+
+    if (!ephpos_B2b(time,eph,rs,dts,var,svh)) return 0;
+    if (!b2b_rac_to_ecef(rs,rs+3,b2b->deph,delta)) {
+        trace(3,"invalid b2b rac basis: %s sat=%2d\n",time_str(time,0),sat);
+        *svh=-1;
+        return 0;
+    }
+    for (i=0;i<3;i++) {
+        rs[i]-=delta[i];
+        if (!b2b_satpos_finite(rs[i])) {
+            *svh=-1;
+            return 0;
+        }
+    }
+    if (!b2b_clock_correct(dts[0],b2b->dclk[0],dts)) {
+        *svh=-1;
+        return 0;
+    }
+    *var=variance;
+
+    trace(5,"satpos_B2b: %s sat=%2d deph=%6.3f %6.3f %6.3f "
+          "delta=%6.3f %6.3f %6.3f dclk=%6.3f var=%6.3f\n",
+          time_str(time,2),sat,b2b->deph[0],b2b->deph[1],b2b->deph[2],
+          delta[0],delta[1],delta[2],b2b->dclk[0],*var);
+
+    return 1;
+}
 /* satellite position and clock ------------------------------------------------
 * compute satellite position, velocity and clock
 * args   : gtime_t time     I   time (gpst)
@@ -758,6 +902,7 @@ extern int satpos(gtime_t time, gtime_t teph, int sat, int ephopt,
         case EPHOPT_BRDC  : return ephpos     (time,teph,sat,nav,-1,rs,dts,var,svh);//广播星历
         case EPHOPT_SBAS  : return satpos_sbas(time,teph,sat,nav,   rs,dts,var,svh);//SBAS，美国的一种修正方式
         case EPHOPT_SSRAPC: return satpos_ssr (time,teph,sat,nav, 0,rs,dts,var,svh);//参考天线相位中心
+        case EPHOPT_B2b   : return satpos_B2b (time,teph,sat,nav,   rs,dts,var,svh);
         case EPHOPT_SSRCOM: return satpos_ssr (time,teph,sat,nav, 1,rs,dts,var,svh);//参考质心，还需要天线相位中心改正
         case EPHOPT_PREC  ://精密星历，SP3，clk
             if (!peph2pos(time,sat,nav,1,rs,dts,var)) break; else return 1;

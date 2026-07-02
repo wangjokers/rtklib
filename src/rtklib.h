@@ -419,6 +419,7 @@ extern "C" {
 #define EPHOPT_SBAS 2                   /* ephemeris option: broadcast + SBAS */
 #define EPHOPT_SSRAPC 3                 /* ephemeris option: broadcast + SSR_APC */
 #define EPHOPT_SSRCOM 4                 /* ephemeris option: broadcast + SSR_COM */
+#define EPHOPT_B2b 5                    /* ephemeris option: broadcast + PPP-B2b SSR APC */
 
 #define ARMODE_OFF  0                   /* AR mode: off */
 #define ARMODE_CONT 1                   /* AR mode: continuous */
