@@ -212,12 +212,18 @@ static int decode_PPPPB2BINFO3(raw_t *raw, const uint8_t *payload,
         int bias_num=get_u2(p+2);
         const int *modes;
         B2bssr_t *ssr;
-        int sat_updated=0;
+        int sat_updated=0,new_epoch;
 
         if (sat<=0||sat>MAXSAT) continue;
         if (!(modes=codebias_modes(sat))) continue;
 
         ssr=&raw->nav.B2bssr[sat];
+        new_epoch=!ssr->t0[1].time||ssr->t0[1].time!=ref_time.time||
+                  ssr->t0[1].sec!=ref_time.sec||
+                  ssr->iodssr[1]!=(int)payload[2];
+        if (new_epoch) {
+            memset(ssr->cbias_valid,0,sizeof(ssr->cbias_valid));
+        }
         ssr->t0[1]=ref_time;
         ssr->sow=(int)sow;
         ssr->verify_sow=verify_sod(ref_time);
@@ -234,10 +240,11 @@ static int decode_PPPPB2BINFO3(raw_t *raw, const uint8_t *payload,
             code=modes[mode];
             if (code<=CODE_NONE||code>MAXCODE) continue;
             ssr->cbias[code]=(float)(corr*0.017);
+            ssr->cbias_valid[code]=1;
             sat_updated=1;
         }
-        if (sat_updated) {
-            ssr->update=1; /* code-bias product is ready in raw->nav.B2bssr */
+        if (sat_updated||new_epoch) {
+            ssr->update=1; /* code-bias product or invalidation is ready */
             updated++;
         }
     }

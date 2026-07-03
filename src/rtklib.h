@@ -827,6 +827,7 @@ typedef struct {        /* PPP-B2b SSR correction type */
     double ddeph[3];    /* dot delta orbit {radial,along,cross} (m/s) */
     int ura;            /* B2b URAI/URA indicator */
     float  cbias[MAXCODE+1]; /* code biases indexed by RTKLIB CODE_*; index 0 unused */
+    uint8_t cbias_valid[MAXCODE+1]; /* explicit code-bias validity; index 0 unused */
     double dclk [3];    /* delta clock {c0,c1,c2} (m,m/s,m/s^2) */
     int update;         /* update flag (0:no update,1:new B2b product) */
 } B2bssr_t;
@@ -1432,6 +1433,8 @@ EXPORT int     b2b_orbit_age_valid(gtime_t time, const B2bssr_t *b2b,
                                    double *age);
 EXPORT int     b2b_cbias_age_valid(gtime_t time, const B2bssr_t *b2b,
                                    double *age);
+EXPORT int     b2b_cbias_ready(gtime_t time, const B2bssr_t *b2b,
+                               int code, double *bias, double *age);
 EXPORT int     b2b_clock_age_valid(gtime_t time, const B2bssr_t *b2b,
                                    double *age);
 EXPORT int     b2b_orbit_clock_ready(gtime_t time, const B2bssr_t *b2b,

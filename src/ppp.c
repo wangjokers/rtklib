@@ -723,8 +723,25 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
         L[i]=obs->L[i]*CLIGHT/freq[i]-dants[i]-dantr[i]-phw*CLIGHT/freq[i];
         P[i]=obs->P[i]-dants[i]-dantr[i];
         
+        /* PPP-B2b code bias replaces the legacy same-signal DCB path. */
+        if (opt->sateph==EPHOPT_B2b) {
+            const B2bssr_t *b2b=nav&&obs->sat>0&&obs->sat<=MAXSAT?
+                                 nav->B2bssr+obs->sat:NULL;
+            double bias=0.0,age=0.0;
+
+            if (!b2b_cbias_ready(obs->time,b2b,obs->code[i],&bias,&age)) {
+                trace(3,"b2b code bias not ready: %s sat=%2d f=%d code=%d age=%.0f\n",
+                      time_str(obs->time,0),obs->sat,i+1,obs->code[i],age);
+                P[i]=0.0;
+                continue;
+            }
+            P[i]-=bias;
+            trace(5,"b2b code bias applied: %s sat=%2d f=%d code=%d "
+                    "bias=%.4f age=%.0f P=%.4f\n",time_str(obs->time,0),
+                  obs->sat,i+1,obs->code[i],bias,age,P[i]);
+        }
         /* P1-C1,P2-C2 dcb correction (C1->P1,C2->P2) */
-        if (sys==SYS_GPS||sys==SYS_GLO) {
+        else if (sys==SYS_GPS||sys==SYS_GLO) {
             if (obs->code[i]==CODE_L1C) P[i]+=nav->cbias[obs->sat-1][1];
             if (obs->code[i]==CODE_L2C) P[i]+=nav->cbias[obs->sat-1][2];
         }

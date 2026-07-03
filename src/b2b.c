@@ -204,6 +204,42 @@ extern int b2b_cbias_age_valid(gtime_t time, const B2bssr_t *b2b,
     return b2b_age_valid(time,b2b->t0[1],B2B_CBIAS_VALIDITY,age);
 }
 
+/* validate one signal-specific PPP-B2b code-bias correction -----------
+* args   : gtime_t         time I   requested signal/solution time
+*          const B2bssr_t *b2b  I   satellite PPP-B2b products
+*          int             code I   RTKLIB CODE_* observation code
+*          double         *bias O   code bias (m), optional
+*          double         *age  O   code-bias age (s), optional
+* return : 1 if the requested code bias is present, current and finite
+* notes  : update is an event flag and is deliberately ignored. A real 0.0 m
+*          bias is valid only when cbias_valid[code] is set.
+*-----------------------------------------------------------------------------*/
+extern int b2b_cbias_ready(gtime_t time, const B2bssr_t *b2b,
+                           int code, double *bias, double *age)
+{
+    double age_value=0.0,value;
+
+    if (bias) *bias=0.0;
+    if (age) *age=0.0;
+    if (!b2b||code<=CODE_NONE||code>MAXCODE) return 0;
+    if (!b2b_cbias_age_valid(time,b2b,&age_value)) {
+        if (age) *age=age_value;
+        return 0;
+    }
+    if (!b2b->cbias_valid[code]) {
+        if (age) *age=age_value;
+        return 0;
+    }
+    value=b2b->cbias[code];
+    if (!b2b_finite(value)) {
+        if (age) *age=age_value;
+        return 0;
+    }
+    if (bias) *bias=value;
+    if (age) *age=age_value;
+    return 1;
+}
+
 /* check PPP-B2b clock age against the ICD nominal validity ------------------*/
 extern int b2b_clock_age_valid(gtime_t time, const B2bssr_t *b2b,
                                double *age)
