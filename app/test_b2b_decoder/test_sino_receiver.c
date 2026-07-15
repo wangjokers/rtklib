@@ -32,6 +32,23 @@ typedef struct {
     long other_product_errors;
 } raw_stats_t;
 
+typedef struct {
+    long events[4];
+    long pending_sats[4];
+    long transferred_sats[4];
+    long second_call_updates;
+    long cbias_valid_raw;
+    long cbias_valid_nav;
+    int errors;
+    int raw_consumed;
+    int fields_match;
+    int cbias_valid_match;
+    int nav_update_visible;
+    int nav_update_survives_second_call;
+    int valid_zero_copied;
+    int index_zero_unchanged;
+} bridge_stats_t;
+
 static int b2b_type(const raw_t *raw)
 {
     if (!raw||raw->len<SINO_HEADER_LEN||
@@ -54,6 +71,32 @@ static int any_update(const raw_t *raw)
         if (raw->nav.B2bssr[sat].update) return 1;
     }
     return 0;
+}
+
+/* Compare every B2b product field while deliberately excluding update, whose
+ * value differs by design after raw-to-nav consumption. */
+static int same_b2b_products(const B2bssr_t *a, const B2bssr_t *b)
+{
+    int i;
+
+    if (!a||!b||a->sow!=b->sow||a->verify_sow!=b->verify_sow||
+        a->iodn!=b->iodn||a->ura!=b->ura) return 0;
+    for (i=0;i<6;i++) {
+        if (a->t0[i].time!=b->t0[i].time||a->t0[i].sec!=b->t0[i].sec||
+            a->udi[i]!=b->udi[i]||a->iodssr[i]!=b->iodssr[i]) return 0;
+    }
+    for (i=0;i<2;i++) {
+        if (a->iodp[i]!=b->iodp[i]) return 0;
+    }
+    for (i=0;i<4;i++) {
+        if (a->iodcorr[i]!=b->iodcorr[i]) return 0;
+    }
+    for (i=0;i<3;i++) {
+        if (a->deph[i]!=b->deph[i]||a->ddeph[i]!=b->ddeph[i]||
+            a->dclk[i]!=b->dclk[i]) return 0;
+    }
+    return !memcmp(a->cbias,b->cbias,sizeof(a->cbias))&&
+           !memcmp(a->cbias_valid,b->cbias_valid,sizeof(a->cbias_valid));
 }
 
 static void set_unsigned_bits(uint8_t *buff, int pos, int len, uint32_t data)
@@ -162,6 +205,117 @@ done:
         if (other->format==STRFMT_SINO) free_raw(other);
         free(other);
     }
+    if (fp) fclose(fp);
+    return ok;
+}
+
+/* Stage 3D: decode real Sino data through the public raw path, then consume
+ * each pending satellite with the common raw-to-main-nav bridge. */
+static int replay_nav_bridge(const char *path, bridge_stats_t *stats)
+{
+    raw_t *raw=NULL;
+    nav_t *nav=NULL;
+    B2bssr_t raw_zero_before,nav_zero_before;
+    uint8_t pending[MAXSAT+1];
+    FILE *fp=NULL;
+    int ret,type,index,sat,code,n,pending_count,ok=0;
+
+    if (!(raw=(raw_t *)calloc(1,sizeof(*raw)))||
+        !(nav=(nav_t *)calloc(1,sizeof(*nav)))||
+        !(fp=fopen(path,"rb"))||!init_raw(raw,STRFMT_SINO)) goto done;
+
+    stats->raw_consumed=1;
+    stats->fields_match=1;
+    stats->cbias_valid_match=1;
+    stats->nav_update_visible=1;
+    stats->nav_update_survives_second_call=1;
+
+    raw->nav.B2bssr[0].iodn=8101;
+    raw->nav.B2bssr[0].deph[0]=8.125;
+    raw->nav.B2bssr[0].cbias_valid[CODE_L1P]=1;
+    raw->nav.B2bssr[0].update=3;
+    nav->B2bssr[0].iodn=9101;
+    nav->B2bssr[0].dclk[0]=9.25;
+    nav->B2bssr[0].cbias_valid[CODE_L2I]=1;
+    nav->B2bssr[0].update=5;
+    raw_zero_before=raw->nav.B2bssr[0];
+    nav_zero_before=nav->B2bssr[0];
+
+    for (;;) {
+        ret=input_rawf(raw,STRFMT_SINO,fp);
+        if (ret==-2) break;
+        if (ret<0) {
+            stats->errors++;
+            continue;
+        }
+        if (ret!=20) continue;
+
+        type=b2b_type(raw);
+        index=type-1;
+        if (index<0||index>=4) {
+            stats->errors++;
+            continue;
+        }
+        stats->events[index]++;
+        memset(pending,0,sizeof(pending));
+        pending_count=0;
+        for (sat=1;sat<=MAXSAT;sat++) {
+            if (!raw->nav.B2bssr[sat].update) continue;
+            pending[sat]=1;
+            pending_count++;
+        }
+        stats->pending_sats[index]+=pending_count;
+
+        n=b2b_update_nav_from_raw(nav,raw);
+        stats->transferred_sats[index]+=n;
+        if (n!=pending_count) stats->fields_match=0;
+        if (type==1&&n!=0) stats->fields_match=0;
+
+        for (sat=1;sat<=MAXSAT;sat++) {
+            const B2bssr_t *src,*dst;
+
+            if (!pending[sat]) continue;
+            src=&raw->nav.B2bssr[sat];
+            dst=&nav->B2bssr[sat];
+            if (src->update) stats->raw_consumed=0;
+            if (!dst->update) stats->nav_update_visible=0;
+            if (!same_b2b_products(src,dst)) stats->fields_match=0;
+
+            for (code=1;code<=MAXCODE;code++) {
+                if (src->cbias_valid[code]) {
+                    stats->cbias_valid_raw++;
+                    if (src->cbias[code]==0.0f&&dst->cbias_valid[code]&&
+                        dst->cbias[code]==0.0f) {
+                        stats->valid_zero_copied=1;
+                    }
+                }
+                if (dst->cbias_valid[code]) stats->cbias_valid_nav++;
+                if (src->cbias_valid[code]!=dst->cbias_valid[code]) {
+                    stats->cbias_valid_match=0;
+                }
+            }
+        }
+
+        stats->second_call_updates+=b2b_update_nav_from_raw(nav,raw);
+        for (sat=1;sat<=MAXSAT;sat++) {
+            if (pending[sat]&&!nav->B2bssr[sat].update) {
+                stats->nav_update_survives_second_call=0;
+            }
+        }
+        b2b_clear_nav_updates(nav);
+    }
+
+    stats->index_zero_unchanged=
+        !memcmp(raw->nav.B2bssr,&raw_zero_before,sizeof(raw_zero_before))&&
+        !memcmp(nav->B2bssr,&nav_zero_before,sizeof(nav_zero_before));
+    ok=1;
+
+done:
+    if (raw) {
+        if (raw->format==STRFMT_SINO) free_raw(raw);
+        free(raw);
+    }
+    free(nav);
     if (fp) fclose(fp);
     return ok;
 }
@@ -407,7 +561,8 @@ static void print_results(const product_stats_t *products,
                           const raw_stats_t *raws, int context_isolated,
                           int index_zero_unchanged, int crc_reject,
                           int length_reject, int iodssr_reject,
-                          int iodp_reject, int mask_gate_reject)
+                          int iodp_reject, int mask_gate_reject,
+                          const bridge_stats_t *bridge)
 {
     long unknown=raws->frames-raws->types[1]-raws->types[2]-
                  raws->types[3]-raws->types[4];
@@ -456,6 +611,27 @@ static void print_results(const product_stats_t *products,
     printf("IODSSR_REJECT %d\n",iodssr_reject);
     printf("IODP_REJECT %d\n",iodp_reject);
     printf("MASK_GATE_REJECT %d\n",mask_gate_reject);
+    printf("BRIDGE_EVENTS %ld,%ld,%ld,%ld\n",bridge->events[0],
+           bridge->events[1],bridge->events[2],bridge->events[3]);
+    printf("BRIDGE_PENDING_SATS %ld,%ld,%ld,%ld\n",
+           bridge->pending_sats[0],bridge->pending_sats[1],
+           bridge->pending_sats[2],bridge->pending_sats[3]);
+    printf("BRIDGE_TRANSFERRED_SATS %ld,%ld,%ld,%ld\n",
+           bridge->transferred_sats[0],bridge->transferred_sats[1],
+           bridge->transferred_sats[2],bridge->transferred_sats[3]);
+    printf("BRIDGE_SECOND_CALL_UPDATES %ld\n",bridge->second_call_updates);
+    printf("BRIDGE_RAW_CONSUMED %d\n",bridge->raw_consumed);
+    printf("BRIDGE_FIELDS_MATCH %d\n",bridge->fields_match);
+    printf("BRIDGE_CBIAS_VALID_MATCH %d\n",bridge->cbias_valid_match);
+    printf("BRIDGE_CBIAS_VALID_COUNTS %ld,%ld\n",
+           bridge->cbias_valid_raw,bridge->cbias_valid_nav);
+    printf("BRIDGE_VALID_ZERO_COPIED %d\n",bridge->valid_zero_copied);
+    printf("BRIDGE_NAV_UPDATE_VISIBLE %d\n",bridge->nav_update_visible);
+    printf("BRIDGE_NAV_UPDATE_SURVIVES_SECOND_CALL %d\n",
+           bridge->nav_update_survives_second_call);
+    printf("BRIDGE_INDEX_ZERO_UNCHANGED %d\n",
+           bridge->index_zero_unchanged);
+    printf("BRIDGE_ERROR %d\n",bridge->errors);
 }
 
 int main(int argc, char **argv)
@@ -464,6 +640,7 @@ int main(int argc, char **argv)
     static const long expected_products[4]={6241,14052,15109,86076};
     product_stats_t products={0};
     raw_stats_t raws={0};
+    bridge_stats_t bridge={0};
     long unknown;
     int i,ok=1,context_isolated=0,index_zero_unchanged=0;
     int crc_reject=0,length_reject=0;
@@ -479,10 +656,11 @@ int main(int argc, char **argv)
     ok&=test_frame_guards(argv[1],&crc_reject,&length_reject);
     ok&=test_mask_gate(argv[1],&mask_gate_reject);
     ok&=test_iod_gates(argv[1],&iodssr_reject,&iodp_reject);
+    ok&=replay_nav_bridge(argv[1],&bridge);
 
     print_results(&products,&raws,context_isolated,index_zero_unchanged,
                   crc_reject,length_reject,iodssr_reject,iodp_reject,
-                  mask_gate_reject);
+                  mask_gate_reject,&bridge);
 
     for (i=0;i<4;i++) {
         ok&=raws.types[i+1]==expected_raw[i];
@@ -519,6 +697,18 @@ int main(int argc, char **argv)
     ok&=products.valid_biases>0&&products.valid_zero_bias;
     ok&=context_isolated&&index_zero_unchanged&&crc_reject&&length_reject&&
         iodssr_reject&&iodp_reject&&mask_gate_reject;
+    for (i=0;i<4;i++) {
+        ok&=bridge.events[i]==expected_products[i];
+        ok&=bridge.pending_sats[i]==bridge.transferred_sats[i];
+        ok&=bridge.pending_sats[i]==products.update_sats[i];
+    }
+    ok&=bridge.pending_sats[0]==0&&bridge.second_call_updates==0&&
+        bridge.cbias_valid_raw>0&&
+        bridge.cbias_valid_raw==bridge.cbias_valid_nav&&
+        bridge.raw_consumed&&bridge.fields_match&&
+        bridge.cbias_valid_match&&bridge.valid_zero_copied&&
+        bridge.nav_update_visible&&bridge.nav_update_survives_second_call&&
+        bridge.index_zero_unchanged&&bridge.errors==0;
 
     printf("SINO_RECEIVER_TEST %s\n",ok?"PASS":"FAIL");
     return ok?0:1;
