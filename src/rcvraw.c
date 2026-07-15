@@ -1611,6 +1611,8 @@ extern int init_raw(raw_t *raw, int format)
          * raw->rcv_data, so each raw_t owns an independent receiver state.
          */
         case STRFMT_UNICORE: ret=init_unicore_b2b(raw); break;
+        /* SinoGNSS keeps its MASK in an independent receiver-owned context. */
+        case STRFMT_SINO: ret=init_sino_b2b(raw); break;
     }
     if (!ret) {
         free_raw(raw);
@@ -1642,6 +1644,7 @@ extern void free_raw(raw_t *raw)
          * free_unicore_b2b() clears raw->rcv_data to prevent stale reuse.
          */
         case STRFMT_UNICORE: free_unicore_b2b(raw); break;
+        case STRFMT_SINO: free_sino_b2b(raw); break;
     }
     raw->rcv_data=NULL;
 }
@@ -1675,6 +1678,7 @@ extern int input_raw(raw_t *raw, int format, uint8_t data)
          * Decoded products remain in raw->nav.B2bssr[sat], not nav->ssr[].
          */
         case STRFMT_UNICORE: return input_unicore(raw,data);
+        case STRFMT_SINO: return input_sino(raw,data);
     }
     return 0;
 }
@@ -1706,6 +1710,7 @@ extern int input_rawf(raw_t *raw, int format, FILE *fp)
          * wrapper only reads bytes and preserves input_unicore() return values.
          */
         case STRFMT_UNICORE: return input_unicoref(raw,fp);
+        case STRFMT_SINO: return input_sinof(raw,fp);
     }
     return -2;
 }

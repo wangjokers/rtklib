@@ -13,6 +13,10 @@ EXEEXT :=
 endif
 
 TARGET := test_b2b_decoder$(EXEEXT)
+SINO_RECEIVER_TARGET := test_sino_receiver$(EXEEXT)
+UNICORE_RECEIVER_TARGET := test_unicore_receiver$(EXEEXT)
+RECEIVER_COMMON_SRCS := test_rtklib_support.c ../../src/b2b.c \
+	../../src/rcvraw.c ../../src/rcv/unicore.c ../../src/rcv/sinan.c
 
 # Default build keeps stage 1 isolated from rtklib/src. Set USE_RTKCMN=1 after
 # the target rtkcmn.c is build-clean if you want to link the original helpers.
@@ -23,9 +27,19 @@ else
 SRCS := test_b2b_decoder.c b2b_decoder.c
 endif
 
-.PHONY: all
+.PHONY: all sino-receiver unicore-receiver
 
 all: $(TARGET)
 
+sino-receiver: $(SINO_RECEIVER_TARGET)
+
+unicore-receiver: $(UNICORE_RECEIVER_TARGET)
+
 $(TARGET): $(SRCS) b2b_decoder.h
 	$(CC) $(CFLAGS) -o $@ $(SRCS) $(LDLIBS)
+
+$(SINO_RECEIVER_TARGET): test_sino_receiver.c $(RECEIVER_COMMON_SRCS)
+	$(CC) $(CFLAGS) -I../../src/rcv -o $@ test_sino_receiver.c $(RECEIVER_COMMON_SRCS) $(LDLIBS)
+
+$(UNICORE_RECEIVER_TARGET): test_unicore_receiver.c $(RECEIVER_COMMON_SRCS)
+	$(CC) $(CFLAGS) -I../../src/rcv -o $@ test_unicore_receiver.c $(RECEIVER_COMMON_SRCS) $(LDLIBS)

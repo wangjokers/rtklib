@@ -57,6 +57,9 @@
     <ClCompile Include="src\rcv\unicore.c">
       <Filter>源文件\src\rcv</Filter>
     </ClCompile>
+    <ClCompile Include="src\rcv\sinan.c">
+      <Filter>源文件\src\rcv</Filter>
+    </ClCompile>
     <ClCompile Include="src\convgpx.c">
       <Filter>源文件\src</Filter>
     </ClCompile>

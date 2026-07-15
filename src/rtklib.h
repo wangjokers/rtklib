@@ -473,6 +473,7 @@ extern "C" {
 #define STRFMT_SBAS  16                 /* stream format: SBAS messages */
 #define STRFMT_NMEA  17                 /* stream format: NMEA 0183 */
 #define STRFMT_UNICORE 18               /* stream format: Unicore UM980/UM982 B2b */
+#define STRFMT_SINO  19                 /* stream format: SinoGNSS K803 PPP-B2b */
 #define MAXRCVFMT    12                 /* max number of receiver format */
 
 #define STR_MODE_R  0x1                 /* stream mode: read */
@@ -1646,6 +1647,9 @@ EXPORT int update_cmr (raw_t *raw, rtksvr_t *svr, obs_t *obs);
 EXPORT int init_unicore_b2b(raw_t *raw);
 EXPORT void free_unicore_b2b(raw_t *raw);
 EXPORT const B2bmask_t *unicore_b2b_mask(const raw_t *raw);
+EXPORT int init_sino_b2b(raw_t *raw);
+EXPORT void free_sino_b2b(raw_t *raw);
+EXPORT const B2bmask_t *sino_b2b_mask(const raw_t *raw);
 
 EXPORT int input_oem4  (raw_t *raw, uint8_t data);
 EXPORT int input_oem3  (raw_t *raw, uint8_t data);
@@ -1659,6 +1663,7 @@ EXPORT int input_bnx   (raw_t *raw, uint8_t data);
 EXPORT int input_rt17  (raw_t *raw, uint8_t data);
 EXPORT int input_sbf   (raw_t *raw, uint8_t data);
 EXPORT int input_unicore(raw_t *raw, uint8_t data);
+EXPORT int input_sino  (raw_t *raw, uint8_t data);
 EXPORT int input_oem4f (raw_t *raw, FILE *fp);
 EXPORT int input_oem3f (raw_t *raw, FILE *fp);
 EXPORT int input_ubxf  (raw_t *raw, FILE *fp);
@@ -1671,6 +1676,7 @@ EXPORT int input_bnxf  (raw_t *raw, FILE *fp);
 EXPORT int input_rt17f (raw_t *raw, FILE *fp);
 EXPORT int input_sbff  (raw_t *raw, FILE *fp);
 EXPORT int input_unicoref(raw_t *raw, FILE *fp);
+EXPORT int input_sinof (raw_t *raw, FILE *fp);
 
 EXPORT int gen_ubx (const char *msg, uint8_t *buff);
 EXPORT int gen_stq (const char *msg, uint8_t *buff);

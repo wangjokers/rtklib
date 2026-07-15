@@ -163,6 +163,7 @@
     <ClCompile Include="src\rcv\ss2.c" />
     <ClCompile Include="src\rcv\ublox.c" />
     <ClCompile Include="src\rcv\unicore.c" />
+    <ClCompile Include="src\rcv\sinan.c" />
     <ClCompile Include="src\rinex.c" />
     <ClCompile Include="src\rnx2rtkp.c" />
     <ClCompile Include="src\rtcm.c" />
