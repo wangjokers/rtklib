@@ -115,6 +115,20 @@ extern void satno2id(int sat, char *id);
 #define PPPPB2BINFO3 2306
 #define PPPPB2BINFO4 2308
 
+/*
+ * SinoGNSS/司南 K803 系列私有帧。
+ *
+ * 与 Unicore 的 AA 44 B5 不同，司南使用 AA 44 12、28 字节头和位打包的
+ * 127 字节 B2b payload。header bytes 8..9 是 payload length，帧末同样是
+ * 对 header+payload 计算的 RTKLIB CRC32。
+ */
+#define SINO_SYNC1 0xAA
+#define SINO_SYNC2 0x44
+#define SINO_SYNC3 0x12
+#define SINO_HEADER_LEN 28
+#define SINO_MAX_LEN 16384
+#define SINO_B2BRAWNAV 1697
+
 #define B2B_BDS_MINSAT 1
 #define B2B_BDS_MAXSAT 63
 #define B2B_GPS_MINSAT 64
@@ -214,6 +228,9 @@ typedef struct {
     int crc_error_count;
     int frame_error_count;
     int unknown_count;
+    int mask_valid;
+    int sino_frame_count;
+    int sino_type_count[64];
 } b2b_decoder_t;
 
 static const int b2b_bds_codebias_mode[B2B_CODE_BIAS_MODE_NUM] = {
@@ -272,6 +289,33 @@ static uint32_t get_u4(const uint8_t *p)
            ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
+/* 按 B2b 协议的 MSB-first 规则读取无符号/有符号位域。 */
+static uint32_t get_bitu(const uint8_t *buff, int pos, int len)
+{
+    uint32_t bits = 0;
+
+    for (int i = pos; i < pos + len; i++) {
+        bits = (bits << 1) | ((buff[i / 8] >> (7 - i % 8)) & 1u);
+    }
+    return bits;
+}
+
+static int32_t get_bits(const uint8_t *buff, int pos, int len)
+{
+    uint32_t bits = get_bitu(buff, pos, len);
+
+    if (len <= 0 || len >= 32 || !(bits & (1u << (len - 1)))) {
+        return (int32_t)bits;
+    }
+    return (int32_t)(bits | (~0u << len));
+}
+
+static int bit_range_valid(const b2b_decoder_t *ctx, int pos, int len)
+{
+    return pos >= 0 && len >= 0 && pos <= ctx->len * 8 &&
+           len <= ctx->len * 8 - pos;
+}
+
 static int time_is_zero(gtime_t t)
 {
     return t.time == 0 && t.sec == 0.0;
@@ -295,6 +339,16 @@ static int sync_unicore(uint8_t *buff, uint8_t data)
     buff[2] = data;
     return buff[0] == UNICORE_SYNC1 && buff[1] == UNICORE_SYNC2 &&
            buff[2] == UNICORE_SYNC3;
+}
+
+/* 司南帧同步同样使用三字节滑动窗口，但第三字节是 0x12。 */
+static int sync_sino(uint8_t *buff, uint8_t data)
+{
+    buff[0] = buff[1];
+    buff[1] = buff[2];
+    buff[2] = data;
+    return buff[0] == SINO_SYNC1 && buff[1] == SINO_SYNC2 &&
+           buff[2] == SINO_SYNC3;
 }
 
 #ifndef B2B_USE_RTKCMN
@@ -1294,6 +1348,339 @@ static int decode_PPPPB2BINFO4(b2b_decoder_t *ctx, const uint8_t *payload,
     return 20;
 }
 
+/*
+ * 以下四个函数独立实现司南 1697 payload 的 Type 1..4 位域解析。
+ * 它们复用上方已经验证过的 app-local MASK/SSR/打印结构，但不复用参考工程
+ * 的全局 sinan_mask，也不把任何状态写入 RTKLIB raw_t/nav_t。
+ */
+static int decode_sino_type1(b2b_decoder_t *ctx, int pos, FILE *out)
+{
+    b2b_mask_t new_mask;
+    gtime_t ref_time;
+    uint32_t sow;
+    int udi;
+
+    /* SOD17 + reserve4 + IOD_SSR2 + IODP4 + four masks (174 bits). */
+    if (!bit_range_valid(ctx, pos, 27 + B2B_MAXSAT)) {
+        ctx->frame_error_count++;
+        return -1;
+    }
+
+    memset(&new_mask, 0, sizeof(new_mask));
+    sow = get_bitu(ctx->buff, pos, 17);
+    pos += 17 + 4;
+    new_mask.iod_ssr = (int)get_bitu(ctx->buff, pos, 2);
+    pos += 2;
+    new_mask.iodp = (int)get_bitu(ctx->buff, pos, 4);
+    pos += 4;
+
+    for (int i = 0; i < 63; i++, pos++) {
+        new_mask.mask_bd[i] = (int)get_bitu(ctx->buff, pos, 1);
+    }
+    for (int i = 0; i < 37; i++, pos++) {
+        new_mask.mask_gps[i] = (int)get_bitu(ctx->buff, pos, 1);
+    }
+    for (int i = 0; i < 37; i++, pos++) {
+        new_mask.mask_gal[i] = (int)get_bitu(ctx->buff, pos, 1);
+    }
+    for (int i = 0; i < 37; i++, pos++) {
+        new_mask.mask_glo[i] = (int)get_bitu(ctx->buff, pos, 1);
+    }
+
+    ref_time = b2btod2time(ctx->raw_time, sow);
+    udi = !ctx->mask_valid || time_is_zero(ctx->mask.ref_time)
+              ? 0
+              : (int)timediff(ref_time, ctx->mask.ref_time);
+    new_mask.recv_time = ctx->raw_time;
+    new_mask.ref_time = ref_time;
+    mask2satno(&new_mask);
+    ctx->mask = new_mask;
+    ctx->mask_valid = 1;
+
+    print_b2b_info1(out, ctx, udi);
+    ctx->mask_count++;
+    return 20;
+}
+
+static int decode_sino_type2(b2b_decoder_t *ctx, int pos, FILE *out)
+{
+    gtime_t ref_time;
+    double ref_ep[6];
+    uint32_t sow;
+    int iod_ssr, verify_sow;
+
+    /* Common header plus six fixed 69-bit satellite records. */
+    if (!bit_range_valid(ctx, pos, 23 + 6 * 69)) {
+        ctx->frame_error_count++;
+        return -1;
+    }
+
+    sow = get_bitu(ctx->buff, pos, 17);
+    pos += 17 + 4;
+    iod_ssr = (int)get_bitu(ctx->buff, pos, 2);
+    pos += 2;
+    if (!ctx->mask_valid || iod_ssr != ctx->mask.iod_ssr) return 0;
+
+    ref_time = b2btod2time(ctx->raw_time, sow);
+    time2epoch(ref_time, ref_ep);
+    verify_sow = (int)(ref_ep[3] * 3600.0 + ref_ep[4] * 60.0 + ref_ep[5]);
+
+    for (int i = 0; i < 6; i++) {
+        int slot = (int)get_bitu(ctx->buff, pos, 9);
+        int iodn, iodcorr, radial, in_track, cross, ura, sat;
+        b2b_ssr_t *ssr;
+
+        pos += 9;
+        iodn = (int)get_bitu(ctx->buff, pos, 10);
+        pos += 10;
+        iodcorr = (int)get_bitu(ctx->buff, pos, 3);
+        pos += 3;
+        radial = (int)get_bits(ctx->buff, pos, 15);
+        pos += 15;
+        in_track = (int)get_bits(ctx->buff, pos, 13);
+        pos += 13;
+        cross = (int)get_bits(ctx->buff, pos, 13);
+        pos += 13;
+        ura = (int)get_bitu(ctx->buff, pos, 6);
+        pos += 6;
+
+        sat = slot2satno(slot);
+        if (sat <= 0 || sat >= B2B_DECODER_MAXSAT) continue;
+        ssr = &ctx->ssr[sat];
+        ssr->iodssr[0] = iod_ssr;
+        ssr->iodn = iodn;
+        ssr->iodcorr[0] = (uint16_t)iodcorr;
+        ssr->t0[0] = ref_time;
+        ssr->sow = (int)sow;
+        ssr->verify_sow = verify_sow;
+
+        if (abs(radial) >= 16383 || abs(in_track) >= 4095 ||
+            abs(cross) >= 4095) {
+            continue;
+        }
+        ssr->deph[0] = radial * 0.0016;
+        ssr->deph[1] = in_track * 0.0064;
+        ssr->deph[2] = cross * 0.0064;
+        ssr->ura = ura;
+        ssr->update = 1;
+    }
+
+    if (!updated_sat_count(ctx)) return 0;
+    print_b2b_info2(out, ctx);
+    ctx->orbit_count++;
+    finalize_update(ctx, 0);
+    return 20;
+}
+
+static int decode_sino_type3(b2b_decoder_t *ctx, int pos, FILE *out)
+{
+    gtime_t ref_time;
+    double ref_ep[6];
+    uint32_t sow;
+    int iod_ssr, satnum, verify_sow;
+
+    /* SOD17 + reserve4 + IOD_SSR2 + SatNum5. */
+    if (!bit_range_valid(ctx, pos, 28)) {
+        ctx->frame_error_count++;
+        return -1;
+    }
+    sow = get_bitu(ctx->buff, pos, 17);
+    pos += 17 + 4;
+    iod_ssr = (int)get_bitu(ctx->buff, pos, 2);
+    pos += 2;
+    satnum = (int)get_bitu(ctx->buff, pos, 5);
+    pos += 5;
+    if (!ctx->mask_valid || iod_ssr != ctx->mask.iod_ssr) return 0;
+
+    ref_time = b2btod2time(ctx->raw_time, sow);
+    time2epoch(ref_time, ref_ep);
+    verify_sow = (int)(ref_ep[3] * 3600.0 + ref_ep[4] * 60.0 + ref_ep[5]);
+
+    for (int i = 0; i < satnum; i++) {
+        const int *codes = NULL;
+        b2b_ssr_t *ssr = NULL;
+        int slot, sig_num, sat, sys;
+
+        if (!bit_range_valid(ctx, pos, 13)) {
+            ctx->frame_error_count++;
+            return -1;
+        }
+        slot = (int)get_bitu(ctx->buff, pos, 9);
+        pos += 9;
+        sig_num = (int)get_bitu(ctx->buff, pos, 4);
+        pos += 4;
+        if (!bit_range_valid(ctx, pos, sig_num * 16)) {
+            ctx->frame_error_count++;
+            return -1;
+        }
+
+        sat = slot2satno(slot);
+        sys = sat > 0 ? satsys(sat, NULL) : SYS_NONE;
+        if (sys == SYS_GPS) codes = b2b_gps_codebias_mode;
+        else if (sys == SYS_GLO) codes = b2b_glo_codebias_mode;
+        else if (sys == SYS_GAL) codes = b2b_gal_codebias_mode;
+        else if (sys == SYS_CMP) codes = b2b_bds_codebias_mode;
+
+        if (codes && sat < B2B_DECODER_MAXSAT) {
+            ssr = &ctx->ssr[sat];
+            ssr->iodssr[1] = iod_ssr;
+            ssr->t0[1] = ref_time;
+            ssr->sow = (int)sow;
+            ssr->verify_sow = verify_sow;
+        }
+
+        for (int j = 0; j < sig_num; j++) {
+            int mode = (int)get_bitu(ctx->buff, pos, 4);
+            int dcb;
+
+            pos += 4;
+            dcb = (int)get_bits(ctx->buff, pos, 12);
+            pos += 12;
+            if (!ssr || abs(dcb) >= 2103 ||
+                mode < 0 || mode >= B2B_CODE_BIAS_MODE_NUM) {
+                continue;
+            }
+            if (codes[mode] == CODE_NONE || codes[mode] > MAXCODE) continue;
+            ssr->cbias[codes[mode]] = (float)(dcb * 0.017);
+            ssr->update = 1;
+        }
+    }
+
+    if (!updated_sat_count(ctx)) return 0;
+    print_b2b_info3(out, ctx);
+    ctx->code_bias_count++;
+    finalize_update(ctx, 1);
+    return 20;
+}
+
+static int decode_sino_type4(b2b_decoder_t *ctx, int pos, FILE *out)
+{
+    gtime_t ref_time;
+    double ref_ep[6];
+    uint32_t sow;
+    int iod_ssr, iodp, subtype, begin, verify_sow;
+
+    /* Common header plus 23 fixed (IODCorr3 + C0 signed15) records. */
+    if (!bit_range_valid(ctx, pos, 33 + 23 * 18)) {
+        ctx->frame_error_count++;
+        return -1;
+    }
+    sow = get_bitu(ctx->buff, pos, 17);
+    pos += 17 + 4;
+    iod_ssr = (int)get_bitu(ctx->buff, pos, 2);
+    pos += 2;
+    iodp = (int)get_bitu(ctx->buff, pos, 4);
+    pos += 4;
+    subtype = (int)get_bitu(ctx->buff, pos, 5);
+    pos += 5;
+
+    if (!ctx->mask_valid || iod_ssr != ctx->mask.iod_ssr ||
+        iodp != ctx->mask.iodp || subtype > 31) {
+        return 0;
+    }
+    begin = subtype * 23;
+    ref_time = b2btod2time(ctx->raw_time, sow);
+    time2epoch(ref_time, ref_ep);
+    verify_sow = (int)(ref_ep[3] * 3600.0 + ref_ep[4] * 60.0 + ref_ep[5]);
+
+    for (int i = 0; i < 23; i++) {
+        int iodcorr = (int)get_bitu(ctx->buff, pos, 3);
+        int c0, mask_index = begin + i, sat = 0;
+        b2b_ssr_t *ssr;
+
+        pos += 3;
+        c0 = (int)get_bits(ctx->buff, pos, 15);
+        pos += 15;
+        if (mask_index >= 0 && mask_index < ctx->mask.satnum) {
+            sat = ctx->mask.satno[mask_index];
+        }
+        if (sat <= 0 || sat >= B2B_DECODER_MAXSAT) continue;
+
+        ssr = &ctx->ssr[sat];
+        ssr->t0[2] = ref_time;
+        ssr->sow = (int)sow;
+        ssr->verify_sow = verify_sow;
+        ssr->iodssr[2] = iod_ssr;
+        ssr->iodp = iodp;
+        ssr->iodcorr[1] = (uint16_t)iodcorr;
+        if (abs(c0) >= 16383 || iodcorr > 7) continue;
+        ssr->dclk[0] = c0 * 0.0016;
+        ssr->update = 1;
+    }
+
+    if (!updated_sat_count(ctx)) return 0;
+    print_b2b_info4(out, ctx);
+    ctx->clock_count++;
+    finalize_update(ctx, 2);
+    return 20;
+}
+
+static int decode_sino_b2b(b2b_decoder_t *ctx, FILE *out)
+{
+    int pos = SINO_HEADER_LEN * 8;
+    int prn6, message_type;
+
+    /* PRN32 + PRN6 + reserve6 + message type6. */
+    if (!bit_range_valid(ctx, pos, 50)) {
+        ctx->frame_error_count++;
+        return -1;
+    }
+    (void)get_bitu(ctx->buff, pos, 32); /* PRN32 is not reliable in real K803 data. */
+    pos += 32;
+    prn6 = (int)get_bitu(ctx->buff, pos, 6);
+    pos += 6 + 6;
+    message_type = (int)get_bitu(ctx->buff, pos, 6);
+    pos += 6;
+
+    ctx->geoprn = prn6;
+    ctx->sino_type_count[message_type]++;
+    if (prn6 == 62) return 0;
+
+    switch (message_type) {
+    case 1:
+        return decode_sino_type1(ctx, pos, out);
+    case 2:
+        return decode_sino_type2(ctx, pos, out);
+    case 3:
+        return decode_sino_type3(ctx, pos, out);
+    case 4:
+        return decode_sino_type4(ctx, pos, out);
+    default:
+        ctx->unknown_count++;
+        return 0;
+    }
+}
+
+static int decode_sino_frame(b2b_decoder_t *ctx, FILE *out)
+{
+    int type, week;
+    double tow;
+
+    if (rtk_crc32(ctx->buff, ctx->len) != get_u4(ctx->buff + ctx->len)) {
+        ctx->crc_error_count++;
+        return -1;
+    }
+    ctx->sino_frame_count++;
+    if (get_u1(ctx->buff + 3) != SINO_HEADER_LEN) {
+        ctx->frame_error_count++;
+        return -1;
+    }
+
+    type = get_u2(ctx->buff + 4);
+    week = get_u2(ctx->buff + 14);
+    if (week == 0) return 0;
+    tow = get_u4(ctx->buff + 16) * 0.001;
+    ctx->raw_time = gpst2time(week, tow);
+
+    /*
+     * 参考 sinan.c 中 msg/stat 的赋值被注释却仍读取，属于未定义行为。
+     * Stage 1 只使用明确的 GPS week/TOW，并由 CRC、长度和 bit-range 校验把关。
+     */
+    if (type == SINO_B2BRAWNAV) return decode_sino_b2b(ctx, out);
+    ctx->unknown_count++;
+    return 0;
+}
+
 static int decode_unicore_frame(b2b_decoder_t *ctx, FILE *out)
 {
     /* header bytes 4..5 是 Unicore message id，小端：2302/2304/2306/2308。 */
@@ -1359,6 +1746,19 @@ static void print_summary(FILE *out, const b2b_decoder_t *ctx)
     fprintf(out, "  CRC_ERROR:      %d\n", ctx->crc_error_count);
     fprintf(out, "  FRAME_ERROR:    %d\n", ctx->frame_error_count);
     fprintf(out, "  UNKNOWN:        %d\n", ctx->unknown_count);
+    if (ctx->sino_frame_count > 0) {
+        int raw_other = 0;
+
+        for (int i = 0; i < 64; i++) {
+            if (i < 1 || i > 4) raw_other += ctx->sino_type_count[i];
+        }
+        fprintf(out, "  RAW_FRAMES:     %d\n", ctx->sino_frame_count);
+        fprintf(out, "  RAW_TYPE_1:     %d\n", ctx->sino_type_count[1]);
+        fprintf(out, "  RAW_TYPE_2:     %d\n", ctx->sino_type_count[2]);
+        fprintf(out, "  RAW_TYPE_3:     %d\n", ctx->sino_type_count[3]);
+        fprintf(out, "  RAW_TYPE_4:     %d\n", ctx->sino_type_count[4]);
+        fprintf(out, "  RAW_TYPE_OTHER: %d\n", raw_other);
+    }
 }
 
 /*
@@ -1430,6 +1830,57 @@ int b2b_decode_unicore_file(const char *path, FILE *out)
         /* 一帧处理结束，回到同步搜索状态，继续扫描后面的字节流。 */
         ctx.nbyte = 0;
     }
+
+    fclose(fp);
+    print_summary(out, &ctx);
+    return 0;
+}
+
+/*
+ * 司南 Stage 1 文件回放入口。
+ *
+ * raw bytes -> sync AA 44 12 -> header length at +8 -> CRC32
+ *           -> message 1697 -> B2b Type 1/2/3/4 -> shared text output
+ *
+ * ctx 是本次调用的局部对象，因此多个文件/接收机实例不会共享 MASK 生命周期。
+ */
+int b2b_decode_sino_file(const char *path, FILE *out)
+{
+    b2b_decoder_t ctx;
+    FILE *fp;
+    int ch;
+
+    if (!path || !out) return -1;
+    fp = fopen(path, "rb");
+    if (!fp) {
+        fprintf(stderr, "test_b2b_decoder: failed to open input file: %s\n", path);
+        return -1;
+    }
+
+    memset(&ctx, 0, sizeof(ctx));
+    while ((ch = fgetc(fp)) != EOF) {
+        uint8_t data = (uint8_t)ch;
+
+        if (ctx.nbyte == 0) {
+            if (sync_sino(ctx.buff, data)) ctx.nbyte = 3;
+            continue;
+        }
+
+        ctx.buff[ctx.nbyte++] = data;
+        if (ctx.nbyte == 10) {
+            ctx.len = (int)get_u2(ctx.buff + 8) + SINO_HEADER_LEN;
+            if (ctx.len < SINO_HEADER_LEN || ctx.len > SINO_MAX_LEN) {
+                ctx.frame_error_count++;
+                ctx.nbyte = 0;
+                continue;
+            }
+        }
+        if (ctx.nbyte < 10 || ctx.nbyte < ctx.len + 4) continue;
+
+        decode_sino_frame(&ctx, out);
+        ctx.nbyte = 0;
+    }
+    if (ctx.nbyte != 0) ctx.frame_error_count++;
 
     fclose(fp);
     print_summary(out, &ctx);

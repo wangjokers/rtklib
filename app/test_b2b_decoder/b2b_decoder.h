@@ -4,7 +4,7 @@
 #include <stdio.h>
 
 /*
- * Stage 1 唯一对外接口。
+ * Stage 1 文件级解码接口。
  *
  * path: Unicore/UM980 输出的 B2bBin 原始二进制文件。
  * out : 已打开的文本输出流，可以是 stdout，也可以是 main() 打开的 out.txt。
@@ -18,5 +18,16 @@
  *   固定，便于和 RTKLIB-B2b 参考输出做文本对比。
  */
 int b2b_decode_unicore_file(const char *path, FILE *out);
+
+/*
+ * 司南/K803W B2b raw 文件入口。
+ *
+ * path: AA 44 12 私有二进制帧文件（扩展名不参与格式判断）。
+ * out : 已打开的文本输出流，输出四类 B2b section 和统计摘要。
+ *
+ * NOTE: 与 Unicore 入口一样，本函数只使用 app-local decoder context，
+ *       不读写 raw_t、nav_t 或 PPP 主流程状态。
+ */
+int b2b_decode_sino_file(const char *path, FILE *out);
 
 #endif

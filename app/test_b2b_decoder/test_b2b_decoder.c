@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <string.h>
 
 #include "b2b_decoder.h"
 
@@ -7,8 +8,8 @@
  *
  * 这个文件只负责命令行入口，不参与任何 B2b 业务字段解析：
  *
- *   argv[1] -> Unicore/UM980 B2bBin 原始文件
- *   argv[2] -> 可选输出 txt；没有传 argv[2] 时直接写 stdout
+ *   -U input [out] -> Unicore/UM980 B2bBin（默认格式）
+ *   -S input [out] -> SinoGNSS/司南 AA 44 12 B2b raw
  *
  * 真正的帧同步、CRC、消息号分发和 MASK/ORBIT/CODE_BIAS/CLOCK 解码
  * 都在 b2b_decoder.c 的 b2b_decode_unicore_file() 里完成。这样 main()
@@ -17,7 +18,7 @@
  */
 static void print_usage(const char *prog)
 {
-    fprintf(stderr, "Usage: %s <Unicore_B2bBin> [out.txt]\n", prog);
+    fprintf(stderr, "Usage: %s [-U|-S] <B2b_raw_file> [out.txt]\n", prog);
 }
 
 /*
@@ -35,23 +36,36 @@ static void print_usage(const char *prog)
 int main(int argc, char **argv)
 {
     FILE *out = stdout;
+    const char *input_path;
+    const char *output_path = NULL;
+    int format_sino = 0;
+    int argi = 1;
     int ret;
 
-    if (argc != 2 && argc != 3) {
+    if (argc > 1 && (strcmp(argv[1], "-U") == 0 || strcmp(argv[1], "-S") == 0)) {
+        format_sino = strcmp(argv[1], "-S") == 0;
+        argi++;
+    }
+    if (argc - argi != 1 && argc - argi != 2) {
         print_usage(argv[0]);
         return 1;
     }
-    if (argc == 3) {
-        /* argv[2] 是可选输出路径，例如 out.txt；输出格式由解码器保持稳定。 */
-        out = fopen(argv[2], "w");
+    input_path = argv[argi];
+    if (argc - argi == 2) output_path = argv[argi + 1];
+
+    if (output_path) {
+        /* 可选输出路径例如 out.txt；输出格式由解码器保持稳定。 */
+        out = fopen(output_path, "w");
         if (!out) {
-            fprintf(stderr, "test_b2b_decoder: failed to open output file: %s\n", argv[2]);
+            fprintf(stderr, "test_b2b_decoder: failed to open output file: %s\n",
+                    output_path);
             return 1;
         }
     }
 
-    /* argv[1] 决定本次解码哪个 B2bBin 文件。 */
-    ret = b2b_decode_unicore_file(argv[1], out);
+    /* 无格式选项时保持原有 Unicore 行为；-S 显式选择司南格式。 */
+    ret = format_sino ? b2b_decode_sino_file(input_path, out)
+                      : b2b_decode_unicore_file(input_path, out);
 
     if (out != stdout) {
         fclose(out);

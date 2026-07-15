@@ -386,3 +386,9 @@ data04_text/
 .vscode/
 x64/
 
+# Local native test executables and diagnostic output
+*.exe
+*.err
+*.out
+app/test_b2b_decoder/stage*_decoder_out.txt
+
