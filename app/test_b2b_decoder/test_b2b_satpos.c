@@ -224,6 +224,7 @@ static int test_bds_iodc_match(void)
     init_eph(eph+0,sat,77,5,test_time());
     eph[0].M0+=0.1;
     init_eph(eph+1,sat,12,77,test_time());
+    eph[1].code=EPHCODE_BDS_CNV1;
     nav.eph=eph;
     nav.n=2;
     init_b2b(nav.B2bssr+sat,test_time(),77);

@@ -668,10 +668,10 @@ static int code2freq_BDS(uint8_t code, double *freq)
     char *obs=code2obs(code);//又索引确定观测值的类型
     
     switch (obs[0]) {//此处的返回值并非去区分不同的信号，是用于排优先级
-        case '1': *freq=FREQ1;     return 0; /* B1C */
-        case '2': *freq=FREQ1_CMP; return 9; /* B1I */
-        case '7': *freq=FREQ2_CMP; return 9; /* B2I/B2b */
-        case '5': *freq=FREQ5;     return 1; /* B2a */
+        case '1': *freq=FREQ1;     return 9; /* B1C */
+        case '2': *freq=FREQ1_CMP; return 0; /* B1I */
+        case '7': *freq=FREQ2_CMP; return 1; /* B2I/B2b */
+        case '5': *freq=FREQ5;     return 9; /* B2a */
         case '6': *freq=FREQ3_CMP; return 9; /* B3 */
         case '8': *freq=FREQ8;     return 9; /* B2ab */
         //只用2和6两个频点
@@ -2698,7 +2698,7 @@ extern int readblq(const char *file, const char *sta, double *odisp)
         for (p=name;(*p=(char)toupper((int)(*p)));p++) ;
 
 
-        if (strcmp(name,staname,4)) // warn;station name is 4-char
+        if (strncmp(name,staname,4)) // warn;station name is 4-char
                 continue;
         
         /* read blq record */
@@ -2807,13 +2807,20 @@ extern int geterp(const erp_t *erp, gtime_t time, double *erpv)
     erpv[3]=(1.0-a)*erp->data[j].lod    +a*erp->data[j+1].lod;
     return 1;
 }
+/* RINEX4 BDS message family used by ephemeris sort/unique -----------------*/
+static int eph_bds_msgtype(const eph_t *eph)
+{
+    return satsys(eph->sat,NULL)==SYS_CMP&&
+           eph->code==EPHCODE_BDS_CNV1;
+}
 /* compare ephemeris ---------------------------------------------------------*/
 static int cmpeph(const void *p1, const void *p2)
 {
     eph_t *q1=(eph_t *)p1,*q2=(eph_t *)p2;
     return q1->ttr.time!=q2->ttr.time?(int)(q1->ttr.time-q2->ttr.time):
            (q1->toe.time!=q2->toe.time?(int)(q1->toe.time-q2->toe.time):
-            q1->sat-q2->sat);
+            (q1->sat!=q2->sat?q1->sat-q2->sat:
+             eph_bds_msgtype(q1)-eph_bds_msgtype(q2)));
 }
 /* sort and unique ephemeris -------------------------------------------------*/
 static void uniqeph(nav_t *nav)
@@ -2829,7 +2836,8 @@ static void uniqeph(nav_t *nav)
     
     for (i=1,j=0;i<nav->n;i++) {
         if (nav->eph[i].sat!=nav->eph[j].sat||
-            nav->eph[i].iode!=nav->eph[j].iode) {
+            nav->eph[i].iode!=nav->eph[j].iode||
+            eph_bds_msgtype(nav->eph+i)!=eph_bds_msgtype(nav->eph+j)) {
             nav->eph[++j]=nav->eph[i];
         }
     }

@@ -418,11 +418,16 @@ extern void seph2pos(gtime_t time, const seph_t *seph, double *rs, double *dts,
     
     *var=var_uraeph(SYS_SBS,seph->sva);
 }
+/* identify RINEX4 BDS CNV1 ephemeris --------------------------------------*/
+static int eph_is_bds_cnv1(const eph_t *eph)
+{
+    return eph&&eph->code==EPHCODE_BDS_CNV1;
+}
 /* select ephememeris --------------------------------------------------------*/
 static eph_t *seleph(gtime_t time, int sat, int iode, const nav_t *nav)
 {
     double t,tmax,tmin;
-    int i,j=-1,sys,sel;
+    int i,j=-1,sys,sel,cur_cnv1,best_cnv1=0;
     
     trace(4,"seleph  : time=%s sat=%2d iode=%d\n",time_str(time,3),sat,iode);
     //根据传入的sattle number，调用satsys()判断卫星系统，赋值tmax，tmin，sel
@@ -447,10 +452,14 @@ static eph_t *seleph(gtime_t time, int sat, int iode, const nav_t *nav)
             if (timediff(nav->eph[i].toe,time)>=0.0) continue; /* AOD<=0 */
         }
         if ((t=fabs(timediff(nav->eph[i].toe,time)))>tmax) continue;    //筛选星历 -n、o文件时间间隔＜所设阈值
-        if (iode>=0) return nav->eph+i;//星历中的iode正常都＞0，eph指向数组首元素的地址，+i则指向当前循环的元素，
-        if (t<=tmin) {j=i; tmin=t;} /* toe closest to time */ //iode＜0，除需要满足低于阈值，要找出间隔最小的星历用j记录
+        if (iode>=0&&sys!=SYS_CMP) return nav->eph+i;//星历中的iode正常都＞0，eph指向数组首元素的地址，+i则指向当前循环的元素，
+        cur_cnv1=sys==SYS_CMP&&eph_is_bds_cnv1(nav->eph+i);
+        if (j<0||(best_cnv1&&!cur_cnv1)||
+            (best_cnv1==cur_cnv1&&t<=tmin)) {
+            j=i; tmin=t; best_cnv1=cur_cnv1;
+        } /* toe closest to time */ //iode＜0，除需要满足低于阈值，要找出间隔最小的星历用j记录
     }   //更新除离o文件时间最新的toe记录
-    if (iode>=0||j<0) {
+    if (j<0) {
         trace(3,"no broadcast ephemeris: %s sat=%2d iode=%3d\n",
               time_str(time,0),sat,iode);
         return NULL;
@@ -746,6 +755,7 @@ static int b2b_eph_tmax(int sys, double *tmax)
     *tmax=0.0;
     return 0;
 }
+
 /* PPP-B2b IODN match rule ---------------------------------------------------*/
 static int b2b_eph_iodn_match(const eph_t *eph, int sys, int iodn)
 {
@@ -768,7 +778,7 @@ static int b2b_eph_iodn_match(const eph_t *eph, int sys, int iodn)
 static eph_t *seleph_B2b(gtime_t time, int sat, int iodn, const nav_t *nav)
 {
     double t,tmax,tmin;
-    int i,j=-1,sys=satsys(sat,NULL);
+    int i,j=-1,sys=satsys(sat,NULL),cur_cnv1,best_cnv1=0;
 
     trace(4,"seleph_B2b: time=%s sat=%2d iodn=%d\n",
           time_str(time,3),sat,iodn);
@@ -782,10 +792,16 @@ static eph_t *seleph_B2b(gtime_t time, int sat, int iodn, const nav_t *nav)
 
     for (i=0;i<nav->n;i++) {
         if (nav->eph[i].sat!=sat) continue;
+        if (sys==SYS_CMP&&!eph_is_bds_cnv1(nav->eph+i)) continue;
         if (nav->eph[i].svh) continue;
         if (!b2b_eph_iodn_match(nav->eph+i,sys,iodn)) continue;
         if ((t=fabs(timediff(nav->eph[i].toe,time)))>tmax) continue;
-        if (t<=tmin) {j=i; tmin=t;}
+        cur_cnv1=sys==SYS_CMP&&eph_is_bds_cnv1(nav->eph+i);
+        if (j<0||t<tmin-DTTOL||(fabs(t-tmin)<=DTTOL&&cur_cnv1&&!best_cnv1)) {
+            j=i;
+            tmin=t;
+            best_cnv1=cur_cnv1;
+        }
     }
     if (j<0) {
         trace(3,"no b2b broadcast ephemeris: %s sat=%2d iodn=%d\n",

@@ -420,6 +420,7 @@ extern "C" {
 #define EPHOPT_SSRAPC 3                 /* ephemeris option: broadcast + SSR_APC */
 #define EPHOPT_SSRCOM 4                 /* ephemeris option: broadcast + SSR_COM */
 #define EPHOPT_B2b 5                    /* ephemeris option: broadcast + PPP-B2b SSR APC */
+#define EPHCODE_BDS_CNV1 7              /* BDS eph_t.code: RINEX 4 CNV1 message */
 
 #define ARMODE_OFF  0                   /* AR mode: off */
 #define ARMODE_CONT 1                   /* AR mode: continuous */
@@ -613,7 +614,7 @@ typedef struct {        /* GPS/QZS/GAL broadcast ephemeris type */
     int week;           /* GPS/QZS: gps week, GAL: galileo week */
     int code;           /* GPS/QZS: code on L2 */
                         /* GAL: data source defined as rinex 3.03 */
-                        /* BDS: data source (0:unknown,1:B1I,2:B1Q,3:B2I,4:B2Q,5:B3I,6:B3Q) */
+                        /* BDS: data source (0:unknown,1:B1I,2:B1Q,3:B2I,4:B2Q,5:B3I,6:B3Q,7:CNV1) */
     int flag;           /* GPS/QZS: L2 P data flag */
                         /* BDS: nav type (0:unknown,1:IGSO/MEO,2:GEO) */
     gtime_t toe,toc,ttr; /* Toe,Toc,T_trans */

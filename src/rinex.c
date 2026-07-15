@@ -1110,7 +1110,7 @@ static int readrnxobs(FILE *fp, gtime_t ts, gtime_t te, double tint,
 }
 /* decode ephemeris ----------------------------------------------------------*/
 static int decode_eph(double ver, int sat, gtime_t toc, const double *data,
-                      eph_t *eph)
+                      eph_t *eph, int bds_cnv1)
 {
     eph_t eph0={0};
     int sys;
@@ -1186,6 +1186,29 @@ static int decode_eph(double ver, int sat, gtime_t toc, const double *data,
         
         eph->tgd[0]=   data[25];      /* BGD E5a/E1 */
         eph->tgd[1]=   data[26];      /* BGD E5b/E1 */  //用于修正 Galileo 系统中不同频率信号之间的钟差
+    }
+    else if (sys==SYS_CMP&&bds_cnv1) { /* RINEX4 BeiDou CNV1 */
+        int week=0;
+
+        eph->Adot=     data[ 3];      /* Adot */
+        eph->ndot=     data[20];      /* delta n dot */
+        eph->code=EPHCODE_BDS_CNV1;   /* preserve RINEX4 message family */
+        (void)time2bdt(eph->toc,&week);
+        eph->toc=bdt2gpst(eph->toc);  /* bdt -> gpst */
+        eph->iode=(int)data[38];      /* IODE */
+        eph->iodc=(int)data[34];      /* IODC for PPP-B2b IODN match */
+        eph->toes=     data[11];      /* Toe (s) in BDT week */
+        eph->week=     week;          /* RINEX4 CNV1 omits BDT week */
+        eph->toe=bdt2gpst(bdt2time(eph->week,data[11])); /* BDT -> GPST */
+        eph->ttr=bdt2gpst(bdt2time(eph->week,data[35])); /* BDT -> GPST */
+        eph->toe=adjweek(eph->toe,toc);
+        eph->ttr=adjweek(eph->ttr,toc);
+
+        eph->svh =(int)data[32];      /* satH1 */
+        eph->sva=uraindex(data[23]);  /* SISA/SISMA mapped to RTKLIB URA index */
+
+        eph->tgd[2]=   data[29];      /* TGD B1Cp */
+        eph->tgd[4]=   data[27];      /* ISC B1Cd */
     }
     else if (sys==SYS_CMP) { /* BeiDou v.3.02 */
         eph->toc=bdt2gpst(eph->toc);  /* bdt -> gpst */
@@ -1312,6 +1335,44 @@ static int decode_seph(double ver, int sat, gtime_t toc, double *data,
     
     return 1;
 }
+/* supported RINEX 4 ephemeris message types ---------------------------------*/
+static int rnx4_eph_msg_supported(int sys, const char *msg, int *need,
+                                  int *bds_cnv1)
+{
+    if (!need||!bds_cnv1) return 0;
+    *need=31;
+    *bds_cnv1=0;
+
+    if (sys==SYS_GLO) {
+        if (!strcmp(msg,"FDMA")) {
+            *need=15;
+            return 1;
+        }
+        return 0;
+    }
+    if (sys==SYS_SBS) {
+        if (!strcmp(msg,"SBAS")) {
+            *need=15;
+            return 1;
+        }
+        return 0;
+    }
+    if (sys==SYS_CMP) {
+        if (!strcmp(msg,"CNV1")) {
+            *need=39;
+            *bds_cnv1=1;
+            return 1;
+        }
+        return !strcmp(msg,"D1")||!strcmp(msg,"D2")||!strcmp(msg,"D1D2");
+    }
+    if (sys==SYS_GPS||sys==SYS_QZS||sys==SYS_IRN) {
+        return !strcmp(msg,"LNAV");
+    }
+    if (sys==SYS_GAL) {
+        return !strcmp(msg,"INAV")||!strcmp(msg,"FNAV");
+    }
+    return 0;
+}
 /* read RINEX navigation data body -------------------------------------------*/
 static int readrnxnavb(FILE *fp, const char *opt, double ver, int sys,
                        int *type, eph_t *eph, geph_t *geph, seph_t *seph)
@@ -1319,16 +1380,73 @@ static int readrnxnavb(FILE *fp, const char *opt, double ver, int sys,
     gtime_t toc;
     double data[64];
     int i=0,j,prn,sat=0,sp=3,mask;
-    char buff[MAXRNXLEN],id[8]="",*p;
+    int rnx4_need=31,bds_cnv1=0;
+    char buff[MAXRNXLEN],id[8]="",rec[8]="",msg[8]="",*p,*q;
+    fpos_t pos;
     
     trace(4,"readrnxnavb: ver=%.2f sys=%d\n",ver,sys);
     
     /* set system mask */
     mask=set_sysmask(opt);//设置卫星系统掩码
+    if (ver>=4.0) {
+        while (!fgetpos(fp,&pos)&&fgets(buff,MAXRNXLEN,fp)) {
+            for (q=buff;*q==' '||*q=='\t';q++) ;
+            if (*q!='>') continue;
+            if (sscanf(q+2,"%7s %7s %7s",rec,id,msg)<2) {
+                trace(2,"rinex nav record header error: %23.23s\n",buff);
+                continue;
+            }
+            id[3]='\0';
+            sat=satid2no(id);
+            sys=satsys(sat,NULL);
+            bds_cnv1=0;
+            if (strcmp(rec,"EPH")||sat<=0||!sys) continue;
+            if (!rnx4_eph_msg_supported(sys,msg,&rnx4_need,&bds_cnv1)) continue;
+            if (!(mask&sys)) continue;
+
+            i=0;
+            sp=4;
+            while (!fgetpos(fp,&pos)&&fgets(buff,MAXRNXLEN,fp)) {
+                for (q=buff;*q==' '||*q=='\t';q++) ;
+                if (*q=='>') {
+                    fsetpos(fp,&pos);
+                    break;
+                }
+                if (i==0) {
+                    if (str2time(buff+sp,0,19,&toc)) {
+                        trace(2,"rinex nav toc error: %23.23s\n",buff);
+                        break;
+                    }
+                    for (j=0,p=buff+sp+19;j<3;j++,p+=19) {
+                        data[i++]=str2num(p,0,19);
+                    }
+                }
+                else {
+                    for (j=0,p=buff+sp;j<4;j++,p+=19) {
+                        data[i++]=str2num(p,0,19);
+                    }
+                }
+                if (i>=rnx4_need) {
+                    if (sys==SYS_GLO) {
+                        *type=1;
+                        return decode_geph(ver,sat,toc,data,geph);
+                    }
+                    if (sys==SYS_SBS) {
+                        *type=2;
+                        return decode_seph(ver,sat,toc,data,seph);
+                    }
+                    *type=0;
+                    return decode_eph(ver,sat,toc,data,eph,bds_cnv1);
+                }
+            }
+        }
+        return -1;
+    }
     //循环读取一行行，读取到data[]，i记录读取的数据数量，读够数量进入decode_eph()赋值给eph_t结构体
-    while (fgets(buff,MAXRNXLEN,fp)) {
+    while (!fgetpos(fp,&pos)&&fgets(buff,MAXRNXLEN,fp)) {
         //逐行读取导航文件中的数据，每行的长度不超过MAXRNXLEN（定义为1024）。读取的数据存储在buff中。
         if (i==0) {
+            for (q=buff;*q==' '||*q=='	';q++) ;
             
             /* decode satellite field */
             if (ver>=3.0||sys==SYS_GAL||sys==SYS_QZS) { /* ver.3 or GAL/QZS */
@@ -1386,7 +1504,7 @@ static int readrnxnavb(FILE *fp, const char *opt, double ver, int sys,
             else if (i>=31) {
                 if (!(mask&sys)) return 0;
                 *type=0;
-                return decode_eph(ver,sat,toc,data,eph);
+                return decode_eph(ver,sat,toc,data,eph,0);
             }
         }
     }

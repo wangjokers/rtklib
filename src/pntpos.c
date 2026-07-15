@@ -62,9 +62,25 @@ static double varerr(const prcopt_t *opt, double el, int sys)
     if (opt->ionoopt==IONOOPT_IFLC) varr*=SQR(3.0); /* iono-free */
     return SQR(fact)*varr;
 }
-/* get group delay parameter (m) ---------------------------------------------*/
-static double gettgd(int sat, const nav_t *nav, int type)
+/* select BDS ephemeris for the signal-specific group delay ----------------*/
+static const eph_t *selbdseph_tgd(gtime_t time, int sat, const nav_t *nav,
+                                     int type)
 {
+    double t,tmin=MAXDTOE_CMP+2.0;
+    int i,j=-1,want_cnv1=type>=2;
+
+    for (i=0;i<nav->n;i++) {
+        if (nav->eph[i].sat!=sat) continue;
+        if ((nav->eph[i].code==EPHCODE_BDS_CNV1)!=want_cnv1) continue;
+        if ((t=fabs(timediff(nav->eph[i].toe,time)))>MAXDTOE_CMP+1.0) continue;
+        if (t<=tmin) {j=i; tmin=t;}
+    }
+    return j<0?NULL:nav->eph+j;
+}
+/* get group delay parameter (m) ---------------------------------------------*/
+static double gettgd(gtime_t time, int sat, const nav_t *nav, int type)
+{
+    const eph_t *eph;
     int i,sys=satsys(sat,NULL);
     
     if (sys==SYS_GLO) {
@@ -72,6 +88,10 @@ static double gettgd(int sat, const nav_t *nav, int type)
             if (nav->geph[i].sat==sat) break;
         }
         return (i>=nav->ng)?0.0:-nav->geph[i].dtaun*CLIGHT;
+    }
+    else if (sys==SYS_CMP) {
+        if (!(eph=selbdseph_tgd(time,sat,nav,type))) return 0.0;
+        return eph->tgd[type]*CLIGHT;
     }
     else {
         for (i=0;i<nav->n;i++) {
@@ -138,16 +158,16 @@ static double prange(const obsd_t *obs, const nav_t *nav, const prcopt_t *opt,
         else if (sys==SYS_GAL) { /* E1-E5b */
             gamma=SQR(FREQ1/FREQ7);
             if (getseleph(SYS_GAL)) { /* F/NAV */
-                P2-=gettgd(sat,nav,0)-gettgd(sat,nav,1); /* BGD_E5aE5b */
+                P2-=gettgd(obs->time,sat,nav,0)-gettgd(obs->time,sat,nav,1); /* BGD_E5aE5b */
             }
             return (P2-gamma*P1)/(1.0-gamma);
         }
         else if (sys==SYS_CMP) { /* B1-B2 */
             gamma=SQR(((obs->code[0]==CODE_L2I)?FREQ1_CMP:FREQ1)/FREQ2_CMP);
-            if      (obs->code[0]==CODE_L2I) b1=gettgd(sat,nav,0); /* TGD_B1I*/
-            else if (obs->code[0]==CODE_L1P) b1=gettgd(sat,nav,2); /* TGD_B1Cp */
-            else b1=gettgd(sat,nav,2)+gettgd(sat,nav,4); /* TGD_B1Cp+ISC_B1Cd */
-            b2=gettgd(sat,nav,1); /* TGD_B2I/B2bI (m) *///B2对应的TGD
+            if      (obs->code[0]==CODE_L2I) b1=gettgd(obs->time,sat,nav,0); /* TGD_B1I*/
+            else if (obs->code[0]==CODE_L1P) b1=gettgd(obs->time,sat,nav,2); /* TGD_B1Cp */
+            else b1=gettgd(obs->time,sat,nav,2)+gettgd(obs->time,sat,nav,4); /* TGD_B1Cp+ISC_B1Cd */
+            b2=gettgd(obs->time,sat,nav,1); /* TGD_B2I/B2bI (m) *///B2对应的TGD
             return ((P2-gamma*P1)-(b2-gamma*b1))/(1.0-gamma);//完整的TGD修正双频伪距组合
         }
         else if (sys==SYS_IRN) { /* L5-S */
@@ -161,28 +181,28 @@ static double prange(const obsd_t *obs, const nav_t *nav, const prcopt_t *opt,
         *var=SQR(ERR_CBIAS);
         
         if (sys==SYS_GPS||sys==SYS_QZS) { /* L1 */// 对于 GPS 或 QZS
-            b1=gettgd(sat,nav,0); /* TGD (m) */// 获取 TGD（卫星与接收机之间的时钟差
+            b1=gettgd(obs->time,sat,nav,0); /* TGD (m) */// 获取 TGD（卫星与接收机之间的时钟差
             return P1-b1;                    // 修正 P1
         }
         else if (sys==SYS_GLO) { /* G1 */
             gamma=SQR(FREQ1_GLO/FREQ2_GLO);
-            b1=gettgd(sat,nav,0); /* -dtaun (m) */
+            b1=gettgd(obs->time,sat,nav,0); /* -dtaun (m) */
             return P1-b1/(gamma-1.0);
         }
         else if (sys==SYS_GAL) { /* E1 */
-            if (getseleph(SYS_GAL)) b1=gettgd(sat,nav,0); /* BGD_E1E5a */
-            else                    b1=gettgd(sat,nav,1); /* BGD_E1E5b */
+            if (getseleph(SYS_GAL)) b1=gettgd(obs->time,sat,nav,0); /* BGD_E1E5a */
+            else                    b1=gettgd(obs->time,sat,nav,1); /* BGD_E1E5b */
             return P1-b1;
         }
         else if (sys==SYS_CMP) { /* B1I/B1Cp/B1Cd */
-            if      (obs->code[0]==CODE_L2I) b1=gettgd(sat,nav,0); /* TGD_B1I */
-            else if (obs->code[0]==CODE_L1P) b1=gettgd(sat,nav,2); /* TGD_B1Cp */
-            else b1=gettgd(sat,nav,2)+gettgd(sat,nav,4); /* TGD_B1Cp+ISC_B1Cd */
+            if      (obs->code[0]==CODE_L2I) b1=gettgd(obs->time,sat,nav,0); /* TGD_B1I */
+            else if (obs->code[0]==CODE_L1P) b1=gettgd(obs->time,sat,nav,2); /* TGD_B1Cp */
+            else b1=gettgd(obs->time,sat,nav,2)+gettgd(obs->time,sat,nav,4); /* TGD_B1Cp+ISC_B1Cd */
             return P1-b1;
         }
         else if (sys==SYS_IRN) { /* L5 */
             gamma=SQR(FREQ9/FREQ5);
-            b1=gettgd(sat,nav,0); /* TGD (m) */
+            b1=gettgd(obs->time,sat,nav,0); /* TGD (m) */
             return P1-gamma*b1;// 默认返回未修正的 P1（理论上不会执行到）
         }
     }
