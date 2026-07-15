@@ -62,6 +62,7 @@ static char snrmask_[NFREQ][1024];
 #define POSOPT  "0:llh,1:xyz,2:single,3:posfile,4:rinexhead,5:rtcm,6:raw"
 #define TIDEOPT "0:off,1:on,2:otl"
 #define PHWOPT  "0:off,1:on,2:precise"
+#define B2BFMTOPT "0:off,1:unicore,2:sino"
 
 EXPORT opt_t sysopts[]={
     {"pos1-posmode",    3,  (void *)&prcopt_.mode,       MODOPT },
@@ -78,6 +79,7 @@ EXPORT opt_t sysopts[]={
     {"pos1-ionoopt",    3,  (void *)&prcopt_.ionoopt,    IONOPT },
     {"pos1-tropopt",    3,  (void *)&prcopt_.tropopt,    TRPOPT },
     {"pos1-sateph",     3,  (void *)&prcopt_.sateph,     EPHOPT },
+    {"pos1-b2bformat",  3,  (void *)&prcopt_.b2b_format, B2BFMTOPT},
     {"pos1-posopt1",    3,  (void *)&prcopt_.posopt[0],  SWTOPT },
     {"pos1-posopt2",    3,  (void *)&prcopt_.posopt[1],  SWTOPT },
     {"pos1-posopt3",    3,  (void *)&prcopt_.posopt[2],  PHWOPT },
@@ -183,6 +185,7 @@ EXPORT opt_t sysopts[]={
     {"file-geexefile",  2,  (void *)&filopt_.geexe,      ""     },
     {"file-solstatfile",2,  (void *)&filopt_.solstat,    ""     },
     {"file-tracefile",  2,  (void *)&filopt_.trace,      ""     },
+    {"file-b2brawfile", 2,  (void *)&filopt_.b2braw,     ""     },
     
     {"",0,NULL,""} /* terminator */
 };
@@ -383,6 +386,7 @@ extern int saveopts(const char *file, const char *mode, const char *comment,
     fclose(fp);
     return 1;
 }
+#ifndef B2B_REPLAY_TEST_ONLY
 /* system options buffer to options ------------------------------------------*/
 static void buff2sysopts(void)
 {
@@ -505,6 +509,7 @@ extern void resetsysopts(void)
     filopt_.blq    [0]='\0';
     filopt_.solstat[0]='\0';
     filopt_.trace  [0]='\0';
+    filopt_.b2braw [0]='\0';
     for (i=0;i<2;i++) antpostype_[i]=0;
     elmask_=15.0;
     elmaskar_=0.0;
@@ -550,3 +555,4 @@ extern void setsysopts(const prcopt_t *prcopt, const solopt_t *solopt,
     if (filopt) filopt_=*filopt;
     sysopts2buff();
 }
+#endif /* B2B_REPLAY_TEST_ONLY */

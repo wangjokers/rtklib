@@ -54,6 +54,7 @@
 
 /* constants/global variables ------------------------------------------------*/
 
+#ifndef B2B_REPLAY_TEST_ONLY
 static pcvs_t pcvss={0};        /* receiver antenna parameters */
 static pcvs_t pcvsr={0};        /* satellite antenna parameters */
 static obs_t obss={0};          /* observation data ，存储单个历元下的所有的文件*/
@@ -78,6 +79,7 @@ static char rtcm_file[1024]=""; /* rtcm data file */
 static char rtcm_path[1024]=""; /* rtcm data path */
 static rtcm_t rtcm;             /* rtcm control struct */
 static FILE *fp_rtcm=NULL;      /* rtcm data file pointer */
+#endif
 
 typedef struct {
     raw_t raw;                  /* Unicore receiver decoder state */
@@ -100,6 +102,15 @@ extern int b2b_replay_input_format(const char *path)
         !strcmp(ext,".B2b")) return STRFMT_UNICORE;
     return -1;
 }
+/* map the stable user option to the receiver raw dispatcher ----------------*/
+extern int b2b_replay_format_from_option(int option)
+{
+    switch (option) {
+        case B2BFMT_UNICORE: return STRFMT_UNICORE;
+        case B2BFMT_SINO: return STRFMT_SINO;
+    }
+    return -1;
+}
 /* close one post-processing B2b replay session -----------------------------*/
 extern void b2b_replay_close(b2b_replay_t *replay)
 {
@@ -111,7 +122,8 @@ extern void b2b_replay_close(b2b_replay_t *replay)
 /* open one post-processing B2b replay session ------------------------------*/
 extern int b2b_replay_open(b2b_replay_t *replay, const char *path, int format)
 {
-    if (!replay||!path||format!=STRFMT_UNICORE) return 0;
+    if (!replay||!path||
+        (format!=STRFMT_UNICORE&&format!=STRFMT_SINO)) return 0;
 
     memset(replay,0,sizeof(*replay));
     replay->format=format;
@@ -166,6 +178,7 @@ extern int b2b_replay_update(b2b_replay_t *replay, nav_t *nav,
     return n;
 }
 
+#ifndef B2B_REPLAY_TEST_ONLY
 /* show message and check break ----------------------------------------------*/
 static int checkbrk(const char *format, ...)
 {
@@ -1181,6 +1194,7 @@ static int execses(gtime_t ts, gtime_t te, double ti, const prcopt_t *popt,
     b2b_replay_t *b2b=NULL;
     const char *b2b_path=NULL;
     char tracefile[1024],statfile[1024],path[1024],*ext;
+    char b2b_resolved[MAXSTRPATH]="";
     int i,b2b_format=-1,b2b_count=0;
     
     trace(3,"execses : n=%d outfile=%s\n",n,outfile);
@@ -1189,6 +1203,28 @@ static int execses(gtime_t ts, gtime_t te, double ti, const prcopt_t *popt,
         int format=b2b_replay_input_format(infile[i]);
         if (format<0) continue;
         b2b_path=infile[i];
+        b2b_format=format;
+        b2b_count++;
+    }
+    /* Explicit auxiliary input is separate from the ordinary RINEX/SP3 list.
+     * NOTE: legacy Unicore extensions above remain active only when no
+     * explicit path/format pair is configured. */
+    if (*fopt->b2braw||popt->b2b_format!=B2BFMT_OFF) {
+        int format=b2b_replay_format_from_option(popt->b2b_format);
+
+        if (!*fopt->b2braw||format<0) {
+            showmsg("error : incomplete B2b raw path/format configuration");
+            trace(1,"incomplete B2b raw path/format configuration: path=%s option=%d\n",
+                  fopt->b2braw,popt->b2b_format);
+            return 0;
+        }
+        if (b2b_count>0) {
+            showmsg("error : explicit and legacy B2b raw inputs cannot be combined");
+            trace(1,"explicit and legacy B2b raw inputs cannot be combined\n");
+            return 0;
+        }
+        reppath(fopt->b2braw,b2b_resolved,ts,proc_rov,proc_base);
+        b2b_path=b2b_resolved;
         b2b_format=format;
         b2b_count++;
     }
@@ -1624,3 +1660,4 @@ extern int postpos(gtime_t ts, gtime_t te, double ti, double tu,
     
     return stat;
 }
+#endif /* B2B_REPLAY_TEST_ONLY */

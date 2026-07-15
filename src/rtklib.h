@@ -476,6 +476,10 @@ extern "C" {
 #define STRFMT_SINO  19                 /* stream format: SinoGNSS K803 PPP-B2b */
 #define MAXRCVFMT    12                 /* max number of receiver format */
 
+#define B2BFMT_OFF      0               /* post-processing B2b raw input: off */
+#define B2BFMT_UNICORE  1               /* post-processing B2b raw input: Unicore */
+#define B2BFMT_SINO     2               /* post-processing B2b raw input: SinoGNSS */
+
 #define STR_MODE_R  0x1                 /* stream mode: read */
 #define STR_MODE_W  0x2                 /* stream mode: write */
 #define STR_MODE_RW 0x3                 /* stream mode: read/write */
@@ -1069,6 +1073,7 @@ typedef struct {        /* processing options type */
     double odisp[2][6*11]; /* ocean tide loading parameters {rov,base} */
     int  freqopt;       /* disable L2-AR */
     char pppopt[256];   /* ppp option */
+    int  b2b_format;    /* B2b auxiliary raw format (B2BFMT_???) */
 } prcopt_t;//定位时各种参数的配置
 
 typedef struct {        /* solution options type */
@@ -1106,6 +1111,7 @@ typedef struct {        /* file options type */
     char geexe  [MAXSTRPATH]; /* google earth exec file */
     char solstat[MAXSTRPATH]; /* solution statistics file */
     char trace  [MAXSTRPATH]; /* debug trace file */
+    char b2braw [MAXSTRPATH]; /* explicit PPP-B2b auxiliary raw file */
 } filopt_t;//文件路径的存储，包括配置文件的存储路径
 
 typedef struct {        /* RINEX options type */
