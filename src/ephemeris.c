@@ -220,7 +220,7 @@ extern void eph2pos(gtime_t time, const eph_t *eph, double *rs, double *dts,
 {
     double tk,M,E,Ek,sinE,cosE,u,r,i,O,sin2u,cos2u,x,y,sinO,cosO,cosi,mu,omge;
     double xg,yg,zg,sino,coso;
-    int n,sys,prn;
+    int n,sys,prn,bds_cnv1;
     
     trace(4,"eph2pos : time=%s sat=%2d\n",time_str(time,3),eph->sat);
     
@@ -235,7 +235,13 @@ extern void eph2pos(gtime_t time, const eph_t *eph, double *rs, double *dts,
         case SYS_CMP: mu=MU_CMP; omge=OMGE_CMP; break;//地球引力常数，地球自传角速度
         default:      mu=MU_GPS; omge=OMGE;     break;
     }
+    bds_cnv1=sys==SYS_CMP&&eph->code==EPHCODE_BDS_CNV1;
+
     M=eph->M0+(sqrt(mu/(eph->A*eph->A*eph->A))+eph->deln)*tk;//计算平近点角 M (E.4.3)
+    if (bds_cnv1) {
+        M=eph->M0+(sqrt(mu/(eph->A*eph->A*eph->A))+eph->deln+
+                   0.5*eph->ndot*tk)*tk;
+    }
     //用牛顿迭代法来计算偏近点角 E。参考 RTKLIB manual P145 (E.4.19) (E.4.4)
     for (n=0,E=M,Ek=0.0;fabs(E-Ek)>RTOL_KEPLER&&n<MAX_ITER_KEPLER;n++) {
         Ek=E; E-=(E-eph->e*sin(E)-M)/(1.0-eph->e*cos(E));
@@ -250,6 +256,7 @@ extern void eph2pos(gtime_t time, const eph_t *eph, double *rs, double *dts,
     
     u=atan2(sqrt(1.0-eph->e*eph->e)*sinE,cosE-eph->e)+eph->omg;
     r=eph->A*(1.0-eph->e*cosE);
+    if (bds_cnv1) r=(eph->A+eph->Adot*tk)*(1.0-eph->e*cosE);
     i=eph->i0+eph->idot*tk;
     sin2u=sin(2.0*u); cos2u=cos(2.0*u);
     u+=eph->cus*sin2u+eph->cuc*cos2u;

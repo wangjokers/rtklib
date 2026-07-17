@@ -8,9 +8,16 @@
 #include "rtklib.h"
 #include <float.h>
 
+/* Keep the ICD nominal ages as production defaults. Diagnostic builds may
+ * override the two macros to compare age policies without changing runtime
+ * configuration or weakening the remaining readiness gates. */
+#ifndef B2B_ORBIT_VALIDITY
 #define B2B_ORBIT_VALIDITY 96.0
+#endif
 #define B2B_CBIAS_VALIDITY 86400.0
+#ifndef B2B_CLOCK_VALIDITY
 #define B2B_CLOCK_VALIDITY 12.0
+#endif
 #define B2B_MAX_ORBIT_CORR 10.0
 #define B2B_MAX_CLOCK_CORR (1E-6*CLIGHT)
 #define B2B_TIME_EPS 1E-9

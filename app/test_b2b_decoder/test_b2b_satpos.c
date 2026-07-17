@@ -7,6 +7,7 @@
 
 #define TEST_EPS_POS 1E-6
 #define TEST_EPS_CLK 1E-13
+#define TEST_MU_CMP  3.986004418E14
 
 extern char *time_str(gtime_t t, int n)
 {
@@ -244,6 +245,43 @@ static int test_bds_iodc_match(void)
     return ok;
 }
 
+static int test_bds_cnv1_orbit_rates(void)
+{
+    eph_t cnv1,equivalent,without_rates;
+    double rs_cnv1[3],rs_equivalent[3],rs_without_rates[3],delta[3];
+    double dts,var,tk=600.0;
+    int sat=satno(SYS_CMP,19),ok=1;
+
+    init_eph(&cnv1,sat,12,77,timeadd(test_time(),-tk));
+    cnv1.code=EPHCODE_BDS_CNV1;
+    cnv1.Adot=0.02;
+    cnv1.ndot=2E-13;
+
+    equivalent=cnv1;
+    equivalent.code=0;
+    equivalent.A+=cnv1.Adot*tk;
+    equivalent.M0+=(sqrt(TEST_MU_CMP/(cnv1.A*cnv1.A*cnv1.A))+cnv1.deln+
+                    0.5*cnv1.ndot*tk-
+                    sqrt(TEST_MU_CMP/(equivalent.A*equivalent.A*equivalent.A))-
+                    equivalent.deln)*tk;
+
+    without_rates=cnv1;
+    without_rates.Adot=0.0;
+    without_rates.ndot=0.0;
+
+    eph2pos(test_time(),&cnv1,rs_cnv1,&dts,&var);
+    eph2pos(test_time(),&equivalent,rs_equivalent,&dts,&var);
+    eph2pos(test_time(),&without_rates,rs_without_rates,&dts,&var);
+    ok&=close_vec3(rs_cnv1,rs_equivalent,TEST_EPS_POS);
+    ok&=norm(rs_cnv1,3)>0.0;
+    ok&=norm(rs_without_rates,3)>0.0;
+    delta[0]=rs_cnv1[0]-rs_without_rates[0];
+    delta[1]=rs_cnv1[1]-rs_without_rates[1];
+    delta[2]=rs_cnv1[2]-rs_without_rates[2];
+    ok&=norm(delta,3)>1.0;
+    return ok;
+}
+
 static int test_failure_conditions(void)
 {
     eph_t eph;
@@ -378,18 +416,20 @@ int main(void)
     int iodn_success=test_iodn_match_success();
     int iodn_mismatch=test_iodn_mismatch_fails();
     int bds_iodc=test_bds_iodc_match();
+    int bds_cnv1_rates=test_bds_cnv1_orbit_rates();
     int failures=test_failure_conditions();
     int zero_brdc=test_zero_correction_reproduces_brdc();
     int rac_clock=test_rac_and_clock_sign();
     int disabled=test_disabled_systems();
     int indexing=test_b2b_indexing();
     int existing=test_existing_branches();
-    int all=iodn_success&&iodn_mismatch&&bds_iodc&&failures&&zero_brdc&&
-            rac_clock&&disabled&&indexing&&existing;
+    int all=iodn_success&&iodn_mismatch&&bds_iodc&&bds_cnv1_rates&&failures&&
+            zero_brdc&&rac_clock&&disabled&&indexing&&existing;
 
     printf("IODN_MATCH_SUCCESS %d\n",iodn_success);
     printf("IODN_MISMATCH_FAIL %d\n",iodn_mismatch);
     printf("BDS_IODC_MATCH %d\n",bds_iodc);
+    printf("BDS_CNV1_ORBIT_RATES %d\n",bds_cnv1_rates);
     printf("B2B_FAILURE_CONDITIONS %d\n",failures);
     printf("ZERO_CORRECTION_BRDC %d\n",zero_brdc);
     printf("RAC_AND_CLOCK_SIGN %d\n",rac_clock);
