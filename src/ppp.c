@@ -704,6 +704,17 @@ static double mwmeas(const obsd_t *obs, const nav_t *nav)
     return (obs->L[0]-obs->L[1])*CLIGHT/(freq1-freq2)-
            (freq1*obs->P[0]+freq2*obs->P[1])/(freq1+freq2);
 }
+/* return a stable trace label for the experimental X-code profile ----------*/
+static const char *b2b_xbias_name(int mode)
+{
+    switch (mode) {
+        case B2BXBIAS_OFF  : return "off";
+        case B2BXBIAS_DATA : return "data";
+        case B2BXBIAS_PILOT: return "pilot";
+        case B2BXBIAS_MEAN : return "mean";
+    }
+    return "invalid";
+}
 /* antenna corrected measurements --------------------------------------------*/
 static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
                       const prcopt_t *opt, const double *dantr,
@@ -728,14 +739,23 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
             const B2bssr_t *b2b=nav&&obs->sat>0&&obs->sat<=MAXSAT?
                                  nav->B2bssr+obs->sat:NULL;
             double bias=0.0,age=0.0;
+            int used_mode=B2BXBIAS_OFF;
 
-            if (!b2b_cbias_ready(obs->time,b2b,obs->code[i],&bias,&age)) {
-                trace(3,"b2b code bias not ready: %s sat=%2d f=%d code=%d age=%.0f\n",
-                      time_str(obs->time,0),obs->sat,i+1,obs->code[i],age);
+            if (!b2b_resolve_cbias(obs->time,b2b,sys,obs->code[i],
+                                   opt->b2b_xbias,&bias,&age,&used_mode)) {
+                trace(3,"b2b code bias not ready: %s sat=%2d f=%d code=%d "
+                      "xbias=%s age=%.0f\n",time_str(obs->time,0),obs->sat,
+                      i+1,obs->code[i],b2b_xbias_name(opt->b2b_xbias),age);
                 P[i]=0.0;
                 continue;
             }
             P[i]-=bias;
+            if (used_mode!=B2BXBIAS_OFF) {
+                trace(4,"b2b experimental x-code bias applied: %s sat=%2d "
+                      "f=%d code=%d mode=%s bias=%.4f age=%.0f P=%.4f\n",
+                      time_str(obs->time,0),obs->sat,i+1,obs->code[i],
+                      b2b_xbias_name(used_mode),bias,age,P[i]);
+            }
             trace(5,"b2b code bias applied: %s sat=%2d f=%d code=%d "
                     "bias=%.4f age=%.0f P=%.4f\n",time_str(obs->time,0),
                   obs->sat,i+1,obs->code[i],bias,age,P[i]);

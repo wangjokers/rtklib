@@ -6,6 +6,8 @@
 #include <string.h>
 
 #define TEST_EPS 1E-12
+#define TEST_ORBIT_VALIDITY 126.0
+#define TEST_CLOCK_VALIDITY 42.0
 
 static int close_value(double actual, double expected, double tolerance)
 {
@@ -30,15 +32,19 @@ static int test_age_boundaries(void)
     ok&=b2b_orbit_age_valid(timeadd(t0,-DTTOL),&b2b,&age);
     ok&=close_value(age,-DTTOL,TEST_EPS);
     ok&=!b2b_orbit_age_valid(timeadd(t0,-DTTOL-0.001),&b2b,&age);
-    ok&=b2b_orbit_age_valid(timeadd(t0,96.0+DTTOL),&b2b,&age);
-    ok&=!b2b_orbit_age_valid(timeadd(t0,96.0+DTTOL+0.001),
+    ok&=b2b_orbit_age_valid(timeadd(t0,96.0+DTTOL+0.001),&b2b,&age);
+    ok&=b2b_orbit_age_valid(timeadd(t0,TEST_ORBIT_VALIDITY+DTTOL),
+                            &b2b,&age);
+    ok&=!b2b_orbit_age_valid(timeadd(t0,TEST_ORBIT_VALIDITY+DTTOL+0.001),
                              &b2b,&age);
 
     ok&=b2b_cbias_age_valid(timeadd(t0,86400.0+DTTOL),&b2b,&age);
     ok&=!b2b_cbias_age_valid(timeadd(t0,86400.0+DTTOL+0.001),
                              &b2b,&age);
-    ok&=b2b_clock_age_valid(timeadd(t0,12.0+DTTOL),&b2b,&age);
-    ok&=!b2b_clock_age_valid(timeadd(t0,12.0+DTTOL+0.001),
+    ok&=b2b_clock_age_valid(timeadd(t0,12.0+DTTOL+0.001),&b2b,&age);
+    ok&=b2b_clock_age_valid(timeadd(t0,TEST_CLOCK_VALIDITY+DTTOL),
+                            &b2b,&age);
+    ok&=!b2b_clock_age_valid(timeadd(t0,TEST_CLOCK_VALIDITY+DTTOL+0.001),
                              &b2b,&age);
 
     b2b.t0[0].time=0;
@@ -108,7 +114,7 @@ static int test_orbit_clock_readiness(void)
     ok&=!b2b_orbit_clock_ready(time,&b2b,NULL,NULL);
 
     init_ready_b2b(&b2b);
-    ok&=!b2b_orbit_clock_ready(timeadd(time,12.0+DTTOL+0.001),
+    ok&=!b2b_orbit_clock_ready(timeadd(time,TEST_CLOCK_VALIDITY+DTTOL+0.001),
                                &b2b,NULL,NULL);
     ok&=!b2b_orbit_clock_ready(time,NULL,NULL,NULL);
     return ok;

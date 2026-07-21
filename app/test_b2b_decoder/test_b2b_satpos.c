@@ -296,7 +296,7 @@ static int test_failure_conditions(void)
     ok&=!run_satpos(&nav,sat,EPHOPT_B2b,rs,dts,&var,&svh)&&svh==-1;
 
     init_b2b(nav.B2bssr+sat,test_time(),15);
-    nav.B2bssr[sat].t0[2]=timeadd(test_time(),-12.0-DTTOL-0.1);
+    nav.B2bssr[sat].t0[2]=timeadd(test_time(),-42.0-DTTOL-0.1);
     ok&=!run_satpos(&nav,sat,EPHOPT_B2b,rs,dts,&var,&svh)&&svh==-1;
 
     init_b2b(nav.B2bssr+sat,test_time(),15);

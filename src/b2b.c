@@ -8,15 +8,19 @@
 #include "rtklib.h"
 #include <float.h>
 
-/* Keep the ICD nominal ages as production defaults. Diagnostic builds may
- * override the two macros to compare age policies without changing runtime
- * configuration or weakening the remaining readiness gates. */
+/* The ICD nominal ages are 96 s for orbit and 12 s for clock. The default
+ * policy adds one 30 s observation interval, matching the reference project
+ * while retaining the stricter causal, IOD, finite-value and magnitude gates.
+ * Diagnostic builds may override the effective limits independently. */
+#define B2B_ORBIT_NOMINAL_VALIDITY 96.0
+#define B2B_CLOCK_NOMINAL_VALIDITY 12.0
+#define B2B_AGE_GRACE 30.0
 #ifndef B2B_ORBIT_VALIDITY
-#define B2B_ORBIT_VALIDITY 96.0
+#define B2B_ORBIT_VALIDITY (B2B_ORBIT_NOMINAL_VALIDITY+B2B_AGE_GRACE)
 #endif
 #define B2B_CBIAS_VALIDITY 86400.0
 #ifndef B2B_CLOCK_VALIDITY
-#define B2B_CLOCK_VALIDITY 12.0
+#define B2B_CLOCK_VALIDITY (B2B_CLOCK_NOMINAL_VALIDITY+B2B_AGE_GRACE)
 #endif
 #define B2B_MAX_ORBIT_CORR 10.0
 #define B2B_MAX_CLOCK_CORR (1E-6*CLIGHT)
@@ -183,12 +187,13 @@ extern int b2b_update_nav_from_raw(nav_t *nav, raw_t *raw)
     return n;
 }
 
-/* check PPP-B2b orbit age against the ICD nominal validity ------------------
+/* check PPP-B2b orbit age against the effective validity --------------------
 * args   : gtime_t         time I   requested signal/solution time (GPST)
 *          const B2bssr_t *b2b  I   satellite PPP-B2b products
 *          double         *age  O   orbit age (s), optional
-* return : 1 if -DTTOL <= age <= 96 s + DTTOL, otherwise 0
-* notes  : b2b->udi[0] is diagnostic only and never extends this validity.
+* return : 1 if -DTTOL <= age <= 126 s + DTTOL by default, otherwise 0
+* notes  : the default includes a 30 s engineering grace after the ICD
+*          nominal 96 s. b2b->udi[0] never extends this validity.
 *-----------------------------------------------------------------------------*/
 extern int b2b_orbit_age_valid(gtime_t time, const B2bssr_t *b2b,
                                double *age)
@@ -247,7 +252,60 @@ extern int b2b_cbias_ready(gtime_t time, const B2bssr_t *b2b,
     return 1;
 }
 
-/* check PPP-B2b clock age against the ICD nominal validity ------------------*/
+/* resolve an exact or explicitly enabled experimental BDS X-code bias ------
+* notes  : exact signal-specific products always take priority. Experimental
+*          fallback is restricted to BDS C1X/C5X and never guesses a missing
+*          D/P component in mean mode.
+*-----------------------------------------------------------------------------*/
+extern int b2b_resolve_cbias(gtime_t time, const B2bssr_t *b2b,
+                             int sys, int code, int xbias_mode,
+                             double *bias, double *age, int *used_mode)
+{
+    double data_bias=0.0,pilot_bias=0.0,data_age=0.0,pilot_age=0.0;
+    int data_code=CODE_NONE,pilot_code=CODE_NONE;
+
+    if (bias) *bias=0.0;
+    if (age) *age=0.0;
+    if (used_mode) *used_mode=B2BXBIAS_OFF;
+
+    /* A future exact X product must override every experimental profile. */
+    if (b2b_cbias_ready(time,b2b,code,bias,age)) return 1;
+    if (sys!=SYS_CMP||xbias_mode==B2BXBIAS_OFF) return 0;
+
+    if (code==CODE_L1X) {
+        data_code=CODE_L1D;
+        pilot_code=CODE_L1P;
+    }
+    else if (code==CODE_L5X) {
+        data_code=CODE_L5D;
+        pilot_code=CODE_L5P;
+    }
+    else return 0;
+
+    if (xbias_mode==B2BXBIAS_DATA) {
+        if (!b2b_cbias_ready(time,b2b,data_code,bias,age)) return 0;
+    }
+    else if (xbias_mode==B2BXBIAS_PILOT) {
+        if (!b2b_cbias_ready(time,b2b,pilot_code,bias,age)) return 0;
+    }
+    else if (xbias_mode==B2BXBIAS_MEAN) {
+        int data_ok=b2b_cbias_ready(time,b2b,data_code,&data_bias,&data_age);
+        int pilot_ok=b2b_cbias_ready(time,b2b,pilot_code,&pilot_bias,&pilot_age);
+
+        if (age) *age=data_age>pilot_age?data_age:pilot_age;
+        if (!data_ok||!pilot_ok) return 0;
+        if (bias) *bias=(data_bias+pilot_bias)*0.5;
+    }
+    else return 0;
+
+    if (used_mode) *used_mode=xbias_mode;
+    return 1;
+}
+/* check PPP-B2b clock age against the effective validity --------------------
+* return : 1 if -DTTOL <= age <= 42 s + DTTOL by default, otherwise 0
+* notes  : the default includes a 30 s engineering grace after the ICD
+*          nominal 12 s. Future products beyond DTTOL remain invalid.
+*-----------------------------------------------------------------------------*/
 extern int b2b_clock_age_valid(gtime_t time, const B2bssr_t *b2b,
                                double *age)
 {

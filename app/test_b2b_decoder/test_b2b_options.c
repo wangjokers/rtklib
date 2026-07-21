@@ -59,11 +59,37 @@ static int test_b2b_sateph_mapping(void)
     return ok;
 }
 
+static int test_b2b_xbias_mapping(void)
+{
+    opt_t *opt=searchopt("pos1-b2bxbias",sysopts);
+    char text[64];
+    int ok=1;
+
+    if (!opt) return 0;
+
+    ok&=str2opt(opt,"data");
+    ok&=*(int *)opt->var==B2BXBIAS_DATA;
+    ok&=str2opt(opt,"pilot");
+    ok&=*(int *)opt->var==B2BXBIAS_PILOT;
+    ok&=str2opt(opt,"mean");
+    ok&=*(int *)opt->var==B2BXBIAS_MEAN;
+
+    memset(text,0,sizeof(text));
+    opt2str(opt,text);
+    ok&=!strcmp(text,"mean");
+
+    ok&=str2opt(opt,"off");
+    ok&=*(int *)opt->var==B2BXBIAS_OFF;
+    return ok;
+}
+
 int main(void)
 {
     int mapping=test_b2b_sateph_mapping();
+    int xbias=test_b2b_xbias_mapping();
 
     printf("B2B_SATEPH_MAPPING %d\n",mapping);
-    printf("ALL_B2B_OPTIONS %d\n",mapping);
-    return mapping?0:1;
+    printf("B2B_XBIAS_MAPPING %d\n",xbias);
+    printf("ALL_B2B_OPTIONS %d\n",mapping&&xbias);
+    return mapping&&xbias?0:1;
 }

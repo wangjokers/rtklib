@@ -26,6 +26,22 @@ static void init_cbias(B2bssr_t *b2b, int code, float bias)
     b2b->update=0;
 }
 
+static void set_cbias(B2bssr_t *b2b, int code, float bias)
+{
+    b2b->cbias[code]=bias;
+    b2b->cbias_valid[code]=1;
+}
+
+static void init_xbias(B2bssr_t *b2b)
+{
+    memset(b2b,0,sizeof(*b2b));
+    b2b->t0[1]=test_time();
+    set_cbias(b2b,CODE_L1D,0.10f);
+    set_cbias(b2b,CODE_L1P,0.30f);
+    set_cbias(b2b,CODE_L5D,0.50f);
+    set_cbias(b2b,CODE_L5P,0.90f);
+}
+
 static int apply_b2b_cbias_for_test(int ephopt, gtime_t time,
                                     const B2bssr_t *b2b, int code,
                                     double raw_p, double *corrected_p)
@@ -154,6 +170,102 @@ static int test_non_b2b_mode_keeps_pseudorange(void)
     return ok;
 }
 
+static int test_xbias_off_rejects_combined_codes(void)
+{
+    B2bssr_t b2b;
+
+    init_xbias(&b2b);
+    return !b2b_resolve_cbias(test_time(),&b2b,SYS_CMP,CODE_L1X,
+                              B2BXBIAS_OFF,NULL,NULL,NULL)&&
+           !b2b_resolve_cbias(test_time(),&b2b,SYS_CMP,CODE_L5X,
+                              B2BXBIAS_OFF,NULL,NULL,NULL);
+}
+
+static int test_xbias_data_profile(void)
+{
+    B2bssr_t b2b;
+    double bias=0.0;
+    int used=0,ok=1;
+
+    init_xbias(&b2b);
+    ok&=b2b_resolve_cbias(test_time(),&b2b,SYS_CMP,CODE_L1X,
+                          B2BXBIAS_DATA,&bias,NULL,&used);
+    ok&=used==B2BXBIAS_DATA&&close_value(bias,0.10,1E-7);
+    ok&=b2b_resolve_cbias(test_time(),&b2b,SYS_CMP,CODE_L5X,
+                          B2BXBIAS_DATA,&bias,NULL,&used);
+    ok&=used==B2BXBIAS_DATA&&close_value(bias,0.50,1E-7);
+    return ok;
+}
+
+static int test_xbias_pilot_profile(void)
+{
+    B2bssr_t b2b;
+    double bias=0.0;
+    int used=0,ok=1;
+
+    init_xbias(&b2b);
+    ok&=b2b_resolve_cbias(test_time(),&b2b,SYS_CMP,CODE_L1X,
+                          B2BXBIAS_PILOT,&bias,NULL,&used);
+    ok&=used==B2BXBIAS_PILOT&&close_value(bias,0.30,1E-7);
+    ok&=b2b_resolve_cbias(test_time(),&b2b,SYS_CMP,CODE_L5X,
+                          B2BXBIAS_PILOT,&bias,NULL,&used);
+    ok&=used==B2BXBIAS_PILOT&&close_value(bias,0.90,1E-7);
+    return ok;
+}
+
+static int test_xbias_mean_profile(void)
+{
+    B2bssr_t b2b;
+    double bias=0.0,age=-1.0;
+    int used=0,ok=1;
+
+    init_xbias(&b2b);
+    ok&=b2b_resolve_cbias(test_time(),&b2b,SYS_CMP,CODE_L1X,
+                          B2BXBIAS_MEAN,&bias,&age,&used);
+    ok&=used==B2BXBIAS_MEAN&&close_value(bias,0.20,1E-7);
+    ok&=close_value(age,0.0,TEST_EPS);
+    ok&=b2b_resolve_cbias(test_time(),&b2b,SYS_CMP,CODE_L5X,
+                          B2BXBIAS_MEAN,&bias,&age,&used);
+    ok&=used==B2BXBIAS_MEAN&&close_value(bias,0.70,1E-7);
+    return ok;
+}
+
+static int test_xbias_mean_requires_both_components(void)
+{
+    B2bssr_t b2b;
+
+    init_xbias(&b2b);
+    b2b.cbias_valid[CODE_L1P]=0;
+    return !b2b_resolve_cbias(test_time(),&b2b,SYS_CMP,CODE_L1X,
+                              B2BXBIAS_MEAN,NULL,NULL,NULL);
+}
+
+static int test_exact_x_bias_overrides_experiment(void)
+{
+    B2bssr_t b2b;
+    double bias=0.0;
+    int used=-1;
+
+    init_xbias(&b2b);
+    set_cbias(&b2b,CODE_L1X,1.25f);
+    return b2b_resolve_cbias(test_time(),&b2b,SYS_CMP,CODE_L1X,
+                             B2BXBIAS_DATA,&bias,NULL,&used)&&
+           used==B2BXBIAS_OFF&&close_value(bias,1.25,1E-7);
+}
+
+static int test_xbias_scope_and_invalid_mode(void)
+{
+    B2bssr_t b2b;
+
+    init_xbias(&b2b);
+    return !b2b_resolve_cbias(test_time(),&b2b,SYS_GPS,CODE_L1X,
+                              B2BXBIAS_DATA,NULL,NULL,NULL)&&
+           !b2b_resolve_cbias(test_time(),&b2b,SYS_CMP,CODE_L7X,
+                              B2BXBIAS_DATA,NULL,NULL,NULL)&&
+           !b2b_resolve_cbias(test_time(),&b2b,SYS_CMP,CODE_L1X,
+                              99,NULL,NULL,NULL);
+}
+
 int main(void)
 {
     int applied=test_valid_bias_applies_to_pseudorange();
@@ -164,7 +276,15 @@ int main(void)
     int finite=test_non_finite_rejected();
     int update=test_update_is_not_readiness();
     int non_b2b=test_non_b2b_mode_keeps_pseudorange();
-    int all=applied&&zero&&missing&&bounds&&age&&finite&&update&&non_b2b;
+    int xoff=test_xbias_off_rejects_combined_codes();
+    int xdata=test_xbias_data_profile();
+    int xpilot=test_xbias_pilot_profile();
+    int xmean=test_xbias_mean_profile();
+    int xboth=test_xbias_mean_requires_both_components();
+    int xexact=test_exact_x_bias_overrides_experiment();
+    int xscope=test_xbias_scope_and_invalid_mode();
+    int all=applied&&zero&&missing&&bounds&&age&&finite&&update&&non_b2b&&
+            xoff&&xdata&&xpilot&&xmean&&xboth&&xexact&&xscope;
 
     printf("B2B_CBIAS_APPLIES %d\n",applied);
     printf("B2B_CBIAS_ZERO_VALID %d\n",zero);
@@ -174,6 +294,13 @@ int main(void)
     printf("B2B_CBIAS_FINITE %d\n",finite);
     printf("B2B_CBIAS_UPDATE_IGNORED %d\n",update);
     printf("B2B_CBIAS_NON_B2B_UNCHANGED %d\n",non_b2b);
+    printf("B2B_XBIAS_OFF_STRICT %d\n",xoff);
+    printf("B2B_XBIAS_DATA %d\n",xdata);
+    printf("B2B_XBIAS_PILOT %d\n",xpilot);
+    printf("B2B_XBIAS_MEAN %d\n",xmean);
+    printf("B2B_XBIAS_MEAN_REQUIRES_BOTH %d\n",xboth);
+    printf("B2B_XBIAS_EXACT_OVERRIDES %d\n",xexact);
+    printf("B2B_XBIAS_SCOPE %d\n",xscope);
     printf("ALL_B2B_CBIAS %d\n",all);
     return all?0:1;
 }

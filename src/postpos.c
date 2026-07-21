@@ -220,10 +220,13 @@ static void outrpos(FILE *fp, const double *r, const solopt_t *opt)
     }
 }
 /* output header -------------------------------------------------------------*/
-static void outheader(FILE *fp, char **file, int n, const prcopt_t *popt,
+static void outheader(FILE *fp, char **file, int n, const char *b2b_path,
+                      int b2b_format, const prcopt_t *popt,
                       const solopt_t *sopt)
 {
     const char *s1[]={"GPST","UTC","JST"};
+    const char *b2b_name=b2b_format==STRFMT_UNICORE?"Unicore":
+                         b2b_format==STRFMT_SINO?"SinoGNSS":"unknown";
     gtime_t ts,te;
     double t1,t2;
     int i,j,w1,w2;
@@ -243,6 +246,10 @@ static void outheader(FILE *fp, char **file, int n, const prcopt_t *popt,
         }
         for (i=0;i<n;i++) {
             fprintf(fp,"%s inp file  : %s\n",COMMENTH,file[i]);
+        }
+        if (b2b_path&&*b2b_path) {
+            fprintf(fp,"%s b2b file  : %s\n",COMMENTH,b2b_path);
+            fprintf(fp,"%s b2b format: %s\n",COMMENTH,b2b_name);
         }
         for (i=0;i<obss.n;i++)    if (obss.data[i].rcv==1) break;
         for (j=obss.n-1;j>=0;j--) if (obss.data[j].rcv==1) break;
@@ -1156,6 +1163,7 @@ static void readotl(prcopt_t *popt, const char *file, const sta_t *sta)
 }
 /* write header to output file -----------------------------------------------*/
 static int outhead(const char *outfile, char **infile, int n,
+                   const char *b2b_path, int b2b_format,
                    const prcopt_t *popt, const solopt_t *sopt)
 {
     FILE *fp=stdout;
@@ -1171,7 +1179,7 @@ static int outhead(const char *outfile, char **infile, int n,
         }
     }
     /* output header */
-    outheader(fp,infile,n,popt,sopt);
+    outheader(fp,infile,n,b2b_path,b2b_format,popt,sopt);
     
     if (*outfile) fclose(fp);
     
@@ -1310,7 +1318,7 @@ static int execses(gtime_t ts, gtime_t te, double ti, const prcopt_t *popt,
     }
     /* write header to output file */
     //–¥»Î ‰≥ˆÕ∑
-    if (flag&&!outhead(outfile,infile,n,&popt_,sopt)) {
+    if (flag&&!outhead(outfile,infile,n,b2b_path,b2b_format,&popt_,sopt)) {
         freeobsnav(&obss,&navs);
         return 0;
     }

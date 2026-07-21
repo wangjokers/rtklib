@@ -480,6 +480,11 @@ extern "C" {
 #define B2BFMT_UNICORE  1               /* post-processing B2b raw input: Unicore */
 #define B2BFMT_SINO     2               /* post-processing B2b raw input: SinoGNSS */
 
+#define B2BXBIAS_OFF    0               /* BDS X-code bias: exact code only */
+#define B2BXBIAS_DATA   1               /* experimental: X uses data bias */
+#define B2BXBIAS_PILOT  2               /* experimental: X uses pilot bias */
+#define B2BXBIAS_MEAN   3               /* experimental: X uses D/P mean */
+
 #define STR_MODE_R  0x1                 /* stream mode: read */
 #define STR_MODE_W  0x2                 /* stream mode: write */
 #define STR_MODE_RW 0x3                 /* stream mode: read/write */
@@ -1074,6 +1079,7 @@ typedef struct {        /* processing options type */
     int  freqopt;       /* disable L2-AR */
     char pppopt[256];   /* ppp option */
     int  b2b_format;    /* B2b auxiliary raw format (B2BFMT_???) */
+    int  b2b_xbias;     /* experimental BDS X-code bias (B2BXBIAS_???) */
 } prcopt_t;//定位时各种参数的配置
 
 typedef struct {        /* solution options type */
@@ -1443,6 +1449,9 @@ EXPORT int     b2b_cbias_age_valid(gtime_t time, const B2bssr_t *b2b,
                                    double *age);
 EXPORT int     b2b_cbias_ready(gtime_t time, const B2bssr_t *b2b,
                                int code, double *bias, double *age);
+EXPORT int     b2b_resolve_cbias(gtime_t time, const B2bssr_t *b2b,
+                                 int sys, int code, int xbias_mode,
+                                 double *bias, double *age, int *used_mode);
 EXPORT int     b2b_clock_age_valid(gtime_t time, const B2bssr_t *b2b,
                                    double *age);
 EXPORT int     b2b_orbit_clock_ready(gtime_t time, const B2bssr_t *b2b,

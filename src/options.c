@@ -63,6 +63,7 @@ static char snrmask_[NFREQ][1024];
 #define TIDEOPT "0:off,1:on,2:otl"
 #define PHWOPT  "0:off,1:on,2:precise"
 #define B2BFMTOPT "0:off,1:unicore,2:sino"
+#define B2BXBIASOPT "0:off,1:data,2:pilot,3:mean"
 
 EXPORT opt_t sysopts[]={
     {"pos1-posmode",    3,  (void *)&prcopt_.mode,       MODOPT },
@@ -80,6 +81,7 @@ EXPORT opt_t sysopts[]={
     {"pos1-tropopt",    3,  (void *)&prcopt_.tropopt,    TRPOPT },
     {"pos1-sateph",     3,  (void *)&prcopt_.sateph,     EPHOPT },
     {"pos1-b2bformat",  3,  (void *)&prcopt_.b2b_format, B2BFMTOPT},
+    {"pos1-b2bxbias",   3,  (void *)&prcopt_.b2b_xbias,  B2BXBIASOPT},
     {"pos1-posopt1",    3,  (void *)&prcopt_.posopt[0],  SWTOPT },
     {"pos1-posopt2",    3,  (void *)&prcopt_.posopt[1],  SWTOPT },
     {"pos1-posopt3",    3,  (void *)&prcopt_.posopt[2],  PHWOPT },
