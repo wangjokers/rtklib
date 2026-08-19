@@ -840,6 +840,8 @@ typedef struct {        /* PPP-B2b SSR correction type */
     float  cbias[MAXCODE+1]; /* code biases indexed by RTKLIB CODE_*; index 0 unused */
     uint8_t cbias_valid[MAXCODE+1]; /* explicit code-bias validity; index 0 unused */
     double dclk [3];    /* delta clock {c0,c1,c2} (m,m/s,m/s^2) */
+    uint8_t source_prn6; /* selected Sino PRN6 source (0..63) */
+    uint8_t source_valid; /* source_prn6 provenance is present */
     int update;         /* update flag (0:no update,1:new B2b product) */
 } B2bssr_t;
 
@@ -1118,6 +1120,11 @@ typedef struct {        /* file options type */
     char solstat[MAXSTRPATH]; /* solution statistics file */
     char trace  [MAXSTRPATH]; /* debug trace file */
     char b2braw [MAXSTRPATH]; /* explicit PPP-B2b auxiliary raw file */
+    char obsfile[MAXSTRPATH]; /* configured rover observation input file */
+    char navfile[MAXSTRPATH]; /* configured broadcast navigation input file */
+    char sp3file[MAXSTRPATH]; /* configured precise ephemeris input file */
+    char clkfile[MAXSTRPATH]; /* configured precise clock input file */
+    char outfile[MAXSTRPATH]; /* configured solution output file */
 } filopt_t;//文件路径的存储，包括配置文件的存储路径
 
 typedef struct {        /* RINEX options type */

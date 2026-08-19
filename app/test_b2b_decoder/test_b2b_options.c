@@ -83,13 +83,36 @@ static int test_b2b_xbias_mapping(void)
     return ok;
 }
 
+static int test_config_file_paths(void)
+{
+    static const char *names[]={
+        "file-obsfile","file-navfile","file-sp3file","file-clkfile",
+        "file-outfile"
+    };
+    static const char *values[]={
+        "rover_MO.rnx","broadcast_MN.rnx","precise.SP3","precise.CLK",
+        "result.pos"
+    };
+    opt_t *opt;
+    int i,ok=1;
+
+    for (i=0;i<5;i++) {
+        if (!(opt=searchopt(names[i],sysopts))) return 0;
+        ok&=str2opt(opt,values[i]);
+        ok&=!strcmp((const char *)opt->var,values[i]);
+    }
+    return ok;
+}
+
 int main(void)
 {
     int mapping=test_b2b_sateph_mapping();
     int xbias=test_b2b_xbias_mapping();
+    int files=test_config_file_paths();
 
     printf("B2B_SATEPH_MAPPING %d\n",mapping);
     printf("B2B_XBIAS_MAPPING %d\n",xbias);
-    printf("ALL_B2B_OPTIONS %d\n",mapping&&xbias);
-    return mapping&&xbias?0:1;
+    printf("CONFIG_FILE_PATHS %d\n",files);
+    printf("ALL_B2B_OPTIONS %d\n",mapping&&xbias&&files);
+    return mapping&&xbias&&files?0:1;
 }

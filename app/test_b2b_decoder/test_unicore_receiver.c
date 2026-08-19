@@ -22,6 +22,7 @@ typedef struct {
     int bridge_raw_consumed;
     int bridge_fields_match;
     int bridge_nav_update_visible;
+    int source_fields_clear;
 } test_stats_t;
 
 static int frame_type(const raw_t *raw)
@@ -48,7 +49,9 @@ static int same_products(const B2bssr_t *a, const B2bssr_t *b)
     int i;
 
     if (a->sow!=b->sow||a->verify_sow!=b->verify_sow||
-        a->iodn!=b->iodn||a->ura!=b->ura) return 0;
+        a->iodn!=b->iodn||a->ura!=b->ura||
+        a->source_prn6!=b->source_prn6||
+        a->source_valid!=b->source_valid) return 0;
 
     for (i=0;i<6;i++) {
         if (!same_time(a->t0[i],b->t0[i])||
@@ -90,6 +93,7 @@ static void collect_result(raw_t *raw, nav_t *nav, int type,
         B2bssr_t *ssr=&raw->nav.B2bssr[i];
 
         if (!ssr->update) continue;
+        if (ssr->source_valid) stats->source_fields_clear=0;
         pending[i]=1;
         pending_count++;
         stats->sat_updates[index]++;
@@ -106,6 +110,8 @@ static void collect_result(raw_t *raw, nav_t *nav, int type,
         if (!pending[i]) continue;
         if (raw->nav.B2bssr[i].update) stats->bridge_raw_consumed=0;
         if (!nav->B2bssr[i].update) stats->bridge_nav_update_visible=0;
+        if (raw->nav.B2bssr[i].source_valid||
+            nav->B2bssr[i].source_valid) stats->source_fields_clear=0;
         if (!same_products(raw->nav.B2bssr+i,nav->B2bssr+i)) {
             stats->bridge_fields_match=0;
         }
@@ -285,6 +291,7 @@ int main(int argc, char **argv)
     stats.bridge_raw_consumed=1;
     stats.bridge_fields_match=1;
     stats.bridge_nav_update_visible=1;
+    stats.source_fields_clear=1;
     /*
      * Stage 3C test entry:
      *   init_raw(..., STRFMT_UNICORE)
@@ -331,6 +338,7 @@ int main(int argc, char **argv)
     printf("BRIDGE_RAW_CONSUMED %d\n",stats.bridge_raw_consumed);
     printf("BRIDGE_FIELDS_MATCH %d\n",stats.bridge_fields_match);
     printf("BRIDGE_NAV_UPDATE_VISIBLE %d\n",stats.bridge_nav_update_visible);
+    printf("UNICORE_SOURCE_VALID_CLEAR %d\n",stats.source_fields_clear);
     printf("BRIDGE_PARTIAL_PRODUCTS %d\n",partial_products);
     printf("BRIDGE_INDEX_BOUNDS %d\n",index_bounds);
 
@@ -342,6 +350,7 @@ int main(int argc, char **argv)
     fclose(fp);
     return stats.errors||!context_isolated||stats.bridge_second_updates||
            !stats.bridge_raw_consumed||!stats.bridge_fields_match||
-           !stats.bridge_nav_update_visible||!partial_products||!index_bounds?
+           !stats.bridge_nav_update_visible||!stats.source_fields_clear||
+           !partial_products||!index_bounds?
            1:0;
 }

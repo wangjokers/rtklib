@@ -148,7 +148,7 @@ static int decode_full_file(const char *path, int format, nav_t *nav,
     raw_t *raw,*other;
     B2bssr_t raw_zero,nav_zero;
     FILE *fp;
-    int ret,index,n,sat;
+    int ret,index,n,pending,sat;
 
     if (!(raw=(raw_t *)calloc(1,sizeof(*raw)))||
         !(other=(raw_t *)calloc(1,sizeof(*other)))) {
@@ -200,8 +200,9 @@ static int decode_full_file(const char *path, int format, nav_t *nav,
                 if (raw->nav.B2bssr[sat].update) stats->sat_updates[index]++;
             }
         }
+        pending=raw_update_count(raw);
         n=b2b_update_nav_from_raw(nav,raw);
-        if (index>0&&n<=0) stats->raw_consumed=0;
+        if (n!=pending) stats->raw_consumed=0;
         if (raw_update_count(raw)!=0) stats->raw_consumed=0;
     }
     mask=format==STRFMT_UNICORE?unicore_b2b_mask(other):
@@ -487,7 +488,7 @@ static int run_format_suite(const char *label, const char *path, int format,
 int main(int argc, char **argv)
 {
     static const long unicore_expected[4]={3602,13420,13294,86410};
-    static const long sino_expected[4]={6241,14052,15109,86076};
+    static const long sino_expected[4]={6241,24697,26684,149749};
     int formats,config,open,index_bounds,unicore,sino,ok;
 
     if (argc!=3) {

@@ -40,6 +40,9 @@ static const char *help[]={
 " Command line options are as follows ([]:default). With -k option, the",
 " processing options are input from the configuration file. In this case,",
 " command line options precede options in the configuration file.",
+" Input file arguments may be omitted if file-obsfile and file-navfile are",
+" set in the configuration file. Command-line input files replace all",
+" configured input files, and -o precedes file-outfile.",
 "",
 " -?        print help",
 " -k file   input options from configuration file [off]",
@@ -180,6 +183,26 @@ int main(int argc, char **argv)
         else if (n<MAXFILE) infile[n++]=argv[i];                                //循环判断完一遍参数之后，认为参数是文件路径，用infile数组接收
     }//进一步的赋值，比较繁琐
 
+
+
+
+    /* use the configured input set only when no positional files were given */
+    if (n==0&&(*filopt.obsfile||*filopt.navfile||*filopt.sp3file||
+               *filopt.clkfile)) {
+        if (!*filopt.obsfile) {
+            showmsg("error : file-obsfile is required for config-only input");
+            return -2;
+        }
+        if (!*filopt.navfile) {
+            showmsg("error : file-navfile is required for config-only input");
+            return -2;
+        }
+        infile[n++]=filopt.obsfile;
+        infile[n++]=filopt.navfile;
+        if (*filopt.sp3file) infile[n++]=filopt.sp3file;
+        if (*filopt.clkfile) infile[n++]=filopt.clkfile;
+    }
+    if (!*outfile&&*filopt.outfile) outfile=filopt.outfile;
 
 
 

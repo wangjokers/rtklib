@@ -16,10 +16,16 @@
 
 #define B2B_CODE_MODE_COUNT 15
 #define SINO_CTX_MAGIC      0x53423242u
+#define SINO_PRN6_COUNT     64
 
 typedef struct {
     uint32_t magic;
-    B2bmask_t mask;
+    /* Type 1 and decoded products are source-local. Only a coherent selected
+     * source is published to the legacy raw->nav.B2bssr[] interface. */
+    B2bmask_t mask[SINO_PRN6_COUNT];
+    B2bssr_t *product[SINO_PRN6_COUNT];
+    int selected_prn6[MAXSAT+1];
+    int latest_mask_prn6;
 } sino_b2b_ctx_t;
 
 static const int b2b_bds_codebias_mode[B2B_CODE_MODE_COUNT]={
@@ -63,6 +69,129 @@ static sino_b2b_ctx_t *get_context(const raw_t *raw)
     return ctx->magic==SINO_CTX_MAGIC?ctx:NULL;
 }
 
+static B2bmask_t *get_prn6_mask(sino_b2b_ctx_t *ctx, int prn6)
+{
+    if (!ctx||prn6<0||prn6>=SINO_PRN6_COUNT) return NULL;
+    return &ctx->mask[prn6];
+}
+
+static B2bssr_t *get_prn6_products(sino_b2b_ctx_t *ctx, int prn6,
+                                    int allocate)
+{
+    if (!ctx||prn6<0||prn6>=SINO_PRN6_COUNT) return NULL;
+    if (!ctx->product[prn6]&&allocate) {
+        ctx->product[prn6]=(B2bssr_t *)calloc(MAXSAT+1,sizeof(B2bssr_t));
+    }
+    return ctx->product[prn6];
+}
+
+static int same_product_identity(const B2bssr_t *a, const B2bssr_t *b)
+{
+    return a&&b&&a->iodssr[0]==b->iodssr[0]&&
+           a->iodcorr[0]==b->iodcorr[0]&&a->iodn==b->iodn&&
+           a->iodp[0]==b->iodp[0];
+}
+
+static int source_candidate_ready(gtime_t time, const B2bssr_t *ssr)
+{
+    double variance;
+
+    return b2b_orbit_clock_ready(time,ssr,NULL,NULL)&&
+           b2b_urai_variance(ssr->ura,&variance);
+}
+
+static int newer_candidate(const B2bssr_t *candidate,
+                           const B2bssr_t *current)
+{
+    double dt;
+
+    if (!current) return 1;
+    dt=timediff(candidate->t0[2],current->t0[2]);
+    if (dt>DTTOL) return 1;
+    if (dt<-DTTOL) return 0;
+    return timediff(candidate->t0[0],current->t0[0])>DTTOL;
+}
+
+/* Select one complete source without ever merging product components. */
+static int select_source(const sino_b2b_ctx_t *ctx, gtime_t time, int sat,
+                         int *support)
+{
+    int ready[SINO_PRN6_COUNT]={0};
+    int current,best=-1,best_support=0,prn6,other,count;
+
+    if (support) *support=0;
+    if (!ctx||sat<=0||sat>MAXSAT) return -1;
+    current=ctx->selected_prn6[sat];
+
+    for (prn6=0;prn6<SINO_PRN6_COUNT;prn6++) {
+        if (!ctx->product[prn6]) continue;
+        ready[prn6]=source_candidate_ready(time,
+                                           ctx->product[prn6]+sat);
+    }
+    for (prn6=0;prn6<SINO_PRN6_COUNT;prn6++) {
+        const B2bssr_t *candidate;
+
+        if (!ready[prn6]) continue;
+        candidate=ctx->product[prn6]+sat;
+        count=0;
+        for (other=0;other<SINO_PRN6_COUNT;other++) {
+            if (ready[other]&&same_product_identity(candidate,
+                                      ctx->product[other]+sat)) count++;
+        }
+        if (count>best_support) {
+            best=prn6;
+            best_support=count;
+        }
+        else if (count==best_support) {
+            if (prn6==current) {
+                best=prn6;
+            }
+            else if (best!=current&&
+                     (newer_candidate(candidate,ctx->product[best]+sat)||
+                      (!newer_candidate(ctx->product[best]+sat,candidate)&&
+                       prn6<best))) {
+                best=prn6;
+            }
+        }
+    }
+    if (support) *support=best_support;
+    return best;
+}
+
+/* Publish a complete candidate atomically. Partial source updates stay private
+ * until one source has a current coherent orbit/clock tuple. */
+static int publish_selected(raw_t *raw, sino_b2b_ctx_t *ctx, int sat,
+                            int updated_prn6)
+{
+    B2bssr_t next;
+    int previous,selected,support;
+
+    if (!raw||!ctx||sat<=0||sat>MAXSAT) return 0;
+    previous=ctx->selected_prn6[sat];
+    selected=select_source(ctx,raw->time,sat,&support);
+    if (selected<0) return 0;
+    if (selected==previous&&selected!=updated_prn6) return 0;
+
+    next=ctx->product[selected][sat];
+    if (!next.t0[1].time||next.iodssr[1]!=next.iodssr[0]) {
+        memset(next.cbias_valid,0,sizeof(next.cbias_valid));
+    }
+    next.source_prn6=(uint8_t)selected;
+    next.source_valid=1;
+    next.update=1;
+    raw->nav.B2bssr[sat]=next;
+    ctx->selected_prn6[sat]=selected;
+
+    if (selected!=previous) {
+        trace(3,"sino b2b source select: sat=%2d source=%d previous=%d "
+              "support=%d iodssr=%d iodcorr=%u iodn=%d iodp=%d\n",
+              sat,selected,previous,support,
+              next.iodssr[0],(unsigned int)next.iodcorr[0],next.iodn,
+              next.iodp[0]);
+    }
+    return 1;
+}
+
 /* Search the byte stream for the SinoGNSS AA 44 12 sync sequence. */
 static int sync_sino(uint8_t *buff, uint8_t data)
 {
@@ -103,14 +232,15 @@ static const int *codebias_modes(int sat)
 }
 
 /* Decode B2b Type 1: receiver-local MASK and IOD context. */
-static int decode_type1(raw_t *raw, int pos)
+static int decode_type1(raw_t *raw, int pos, int prn6)
 {
     sino_b2b_ctx_t *ctx=get_context(raw);
+    B2bmask_t *source_mask=get_prn6_mask(ctx,prn6);
     B2bmask_t mask;
     uint32_t sow;
     int i;
 
-    if (!ctx||!bit_range_valid(raw,pos,27+B2B_MAXSAT)) return -1;
+    if (!source_mask||!bit_range_valid(raw,pos,27+B2B_MAXSAT)) return -1;
 
     memset(&mask,0,sizeof(mask));
     sow=getbitu(raw->buff,pos,17); pos+=17;
@@ -127,32 +257,36 @@ static int decode_type1(raw_t *raw, int pos)
     mask.ref_time=b2b_tod2time(raw->time,sow);
     if (!mask.ref_time.time) return -1;
     b2b_mask2satno(&mask);
-    ctx->mask=mask;
+    *source_mask=mask;
+    ctx->latest_mask_prn6=prn6;
     return 20;
 }
 
 /* Decode B2b Type 2: six fixed orbit/URAI records. */
-static int decode_type2(raw_t *raw, int pos)
+static int decode_type2(raw_t *raw, int pos, int prn6)
 {
     sino_b2b_ctx_t *ctx=get_context(raw);
+    B2bmask_t *mask=get_prn6_mask(ctx,prn6);
+    B2bssr_t *products;
     gtime_t ref_time;
     uint32_t sow;
     int i,iod_ssr,updated=0;
 
-    if (!ctx||!bit_range_valid(raw,pos,23+6*69)) return -1;
+    if (!mask||!bit_range_valid(raw,pos,23+6*69)) return -1;
 
     sow=getbitu(raw->buff,pos,17); pos+=17;
     pos+=4; /* reserved */
     iod_ssr=(int)getbitu(raw->buff,pos,2); pos+=2;
-    if (ctx->mask.IOD_SSR<0||iod_ssr!=ctx->mask.IOD_SSR) return 0;
+    if (mask->IOD_SSR<0||iod_ssr!=mask->IOD_SSR) return 0;
 
     ref_time=b2b_tod2time(raw->time,sow);
     if (!ref_time.time) return -1;
+    if (!(products=get_prn6_products(ctx,prn6,1))) return -1;
 
     for (i=0;i<6;i++) {
         int slot=(int)getbitu(raw->buff,pos,9);
         int iodn,iodcorr,radial,in_track,cross,ura,sat;
-        B2bssr_t *ssr;
+        B2bssr_t next;
 
         pos+=9;
         iodn=(int)getbitu(raw->buff,pos,10); pos+=10;
@@ -164,45 +298,52 @@ static int decode_type2(raw_t *raw, int pos)
 
         sat=b2b_slot2satno(slot);
         if (sat<=0||sat>MAXSAT) continue;
-        ssr=&raw->nav.B2bssr[sat]; /* WARNING: B2b uses [sat], not [sat-1]. */
-        ssr->t0[0]=ref_time;
-        ssr->sow=(int)sow;
-        ssr->verify_sow=verify_sod(ref_time);
-        ssr->iodssr[0]=iod_ssr;
-        ssr->iodn=iodn;
-        ssr->iodcorr[0]=(uint16_t)iodcorr;
-
         if (abs(radial)>=16383||abs(in_track)>=4095||abs(cross)>=4095) {
             continue;
         }
-        ssr->deph[0]=radial*0.0016;
-        ssr->deph[1]=in_track*0.0064;
-        ssr->deph[2]=cross*0.0064;
-        ssr->ura=ura;
-        ssr->update=1;
+
+        next=products[sat];
+        next.t0[0]=ref_time;
+        next.sow=(int)sow;
+        next.verify_sow=verify_sod(ref_time);
+        next.iodssr[0]=iod_ssr;
+        next.iodn=iodn;
+        next.iodcorr[0]=(uint16_t)iodcorr;
+        next.deph[0]=radial*0.0016;
+        next.deph[1]=in_track*0.0064;
+        next.deph[2]=cross*0.0064;
+        next.ura=ura;
+        next.source_prn6=(uint8_t)prn6;
+        next.source_valid=1;
+        next.update=0;
+        products[sat]=next;
+        publish_selected(raw,ctx,sat,prn6);
         updated++;
     }
     return updated?20:0;
 }
 
 /* Decode B2b Type 3: variable satellite/signal code-bias records. */
-static int decode_type3(raw_t *raw, int pos)
+static int decode_type3(raw_t *raw, int pos, int prn6)
 {
     sino_b2b_ctx_t *ctx=get_context(raw);
+    B2bmask_t *mask=get_prn6_mask(ctx,prn6);
+    B2bssr_t *products;
     gtime_t ref_time;
     uint32_t sow;
     int i,j,iod_ssr,satnum,updated=0;
 
-    if (!ctx||!bit_range_valid(raw,pos,28)) return -1;
+    if (!mask||!bit_range_valid(raw,pos,28)) return -1;
 
-    sow=getbitu(raw->buff,pos,17); pos+=17;
+    sow=getbitu(raw->buff,pos,17); pos+=17; /* seconds of day */
     pos+=4; /* reserved */
-    iod_ssr=(int)getbitu(raw->buff,pos,2); pos+=2;
-    satnum=(int)getbitu(raw->buff,pos,5); pos+=5;
-    if (ctx->mask.IOD_SSR<0||iod_ssr!=ctx->mask.IOD_SSR) return 0;
+    iod_ssr=(int)getbitu(raw->buff,pos,2); pos+=2;//IOD_SSR
+    satnum=(int)getbitu(raw->buff,pos,5); pos+=5; /* satellite count */
+    if (mask->IOD_SSR<0||iod_ssr!=mask->IOD_SSR) return 0;
 
     ref_time=b2b_tod2time(raw->time,sow);
     if (!ref_time.time) return -1;
+    if (!(products=get_prn6_products(ctx,prn6,1))) return -1;
 
     for (i=0;i<satnum;i++) {
         const int *modes=NULL;
@@ -210,13 +351,13 @@ static int decode_type3(raw_t *raw, int pos)
         int slot,sig_num,sat,new_epoch=0,sat_updated=0;
 
         if (!bit_range_valid(raw,pos,13)) return -1;
-        slot=(int)getbitu(raw->buff,pos,9); pos+=9;
-        sig_num=(int)getbitu(raw->buff,pos,4); pos+=4;
+        slot=(int)getbitu(raw->buff,pos,9); pos+=9; /* B2b slot */
+        sig_num=(int)getbitu(raw->buff,pos,4); pos+=4; /* signal count */
         if (!bit_range_valid(raw,pos,sig_num*16)) return -1;
 
         sat=b2b_slot2satno(slot);
         if (sat>0&&sat<=MAXSAT&&(modes=codebias_modes(sat))) {
-            ssr=&raw->nav.B2bssr[sat]; /* WARNING: index 0 stays unused. */
+            ssr=products+sat; /* WARNING: index 0 stays unused. */
             new_epoch=!ssr->t0[1].time||ssr->t0[1].time!=ref_time.time||
                       ssr->t0[1].sec!=ref_time.sec||
                       ssr->iodssr[1]!=iod_ssr;
@@ -245,7 +386,10 @@ static int decode_type3(raw_t *raw, int pos)
             sat_updated=1;
         }
         if (ssr&&(sat_updated||new_epoch)) {
-            ssr->update=1; /* publish valid biases or an epoch invalidation */
+            ssr->source_prn6=(uint8_t)prn6;
+            ssr->source_valid=1;
+            ssr->update=0;
+            publish_selected(raw,ctx,sat,prn6);
             updated++;
         }
     }
@@ -253,26 +397,29 @@ static int decode_type3(raw_t *raw, int pos)
 }
 
 /* Decode B2b Type 4: one 23-satellite clock subtype. */
-static int decode_type4(raw_t *raw, int pos)
+static int decode_type4(raw_t *raw, int pos, int prn6)
 {
     sino_b2b_ctx_t *ctx=get_context(raw);
+    B2bmask_t *mask=get_prn6_mask(ctx,prn6);
+    B2bssr_t *products;
     gtime_t ref_time;
     uint32_t sow;
     int i,iod_ssr,iodp,subtype,begin,updated=0;
 
-    if (!ctx||!bit_range_valid(raw,pos,33+23*18)) return -1;
+    if (!mask||!bit_range_valid(raw,pos,32+23*18)) return -1;
 
     sow=getbitu(raw->buff,pos,17); pos+=17;
     pos+=4; /* reserved */
     iod_ssr=(int)getbitu(raw->buff,pos,2); pos+=2;
     iodp=(int)getbitu(raw->buff,pos,4); pos+=4;
     subtype=(int)getbitu(raw->buff,pos,5); pos+=5;
-    if (ctx->mask.IOD_SSR<0||iod_ssr!=ctx->mask.IOD_SSR||
-        iodp!=ctx->mask.IODP||subtype>31) return 0;
+    if (mask->IOD_SSR<0||iod_ssr!=mask->IOD_SSR||
+        iodp!=mask->IODP||subtype>31) return 0;
 
     begin=subtype*23;
     ref_time=b2b_tod2time(raw->time,sow);
     if (!ref_time.time) return -1;
+    if (!(products=get_prn6_products(ctx,prn6,1))) return -1;
 
     for (i=0;i<23;i++) {
         int iodcorr=(int)getbitu(raw->buff,pos,3);
@@ -281,22 +428,30 @@ static int decode_type4(raw_t *raw, int pos)
 
         pos+=3;
         c0=(int)getbits(raw->buff,pos,15); pos+=15;
-        if (mask_index>=0&&mask_index<ctx->mask.satnum&&
+        if (mask_index>=0&&mask_index<mask->satnum&&
             mask_index<B2B_MAXSAT) {
-            sat=ctx->mask.satno[mask_index];
+            sat=mask->satno[mask_index];
         }
         if (sat<=0||sat>MAXSAT) continue;
-
-        ssr=&raw->nav.B2bssr[sat]; /* WARNING: B2b uses [sat]. */
-        ssr->t0[2]=ref_time;
-        ssr->sow=(int)sow;
-        ssr->verify_sow=verify_sod(ref_time);
-        ssr->iodssr[2]=iod_ssr;
-        ssr->iodp[0]=iodp;
-        ssr->iodcorr[1]=(uint16_t)iodcorr;
         if (abs(c0)>=16383||iodcorr>7) continue;
-        ssr->dclk[0]=c0*0.0016;
-        ssr->update=1;
+
+        ssr=products+sat; /* WARNING: B2b uses [sat]. */
+        {
+            B2bssr_t next=*ssr;
+
+            next.t0[2]=ref_time;
+            next.sow=(int)sow;
+            next.verify_sow=verify_sod(ref_time);
+            next.iodssr[2]=iod_ssr;
+            next.iodp[0]=iodp;
+            next.iodcorr[1]=(uint16_t)iodcorr;
+            next.dclk[0]=c0*0.0016;
+            next.source_prn6=(uint8_t)prn6;
+            next.source_valid=1;
+            next.update=0;
+            *ssr=next; /* Commit one complete clock tuple atomically. */
+        }
+        publish_selected(raw,ctx,sat,prn6);
         updated++;
     }
     return updated?20:0;
@@ -309,17 +464,17 @@ static int decode_b2b(raw_t *raw)
     int prn6,type;
 
     if (!bit_range_valid(raw,pos,50)) return -1;
-    pos+=32; /* PRN32 is not consistent in the real K803/URUM stream. */
+    pos+=32; /* PRN32 is transport metadata; PRN6 selects B2b context. */
     prn6=(int)getbitu(raw->buff,pos,6); pos+=6;
     pos+=6; /* reserved */
     type=(int)getbitu(raw->buff,pos,6); pos+=6;
 
     if (prn6==62) return 0;
     switch (type) {
-        case 1: return decode_type1(raw,pos);
-        case 2: return decode_type2(raw,pos);
-        case 3: return decode_type3(raw,pos);
-        case 4: return decode_type4(raw,pos);
+        case 1: return decode_type1(raw,pos,prn6);
+        case 2: return decode_type2(raw,pos,prn6);
+        case 3: return decode_type3(raw,pos,prn6);
+        case 4: return decode_type4(raw,pos,prn6);
     }
     return 0; /* Type 63 and other pages do not publish B2b products. */
 }
@@ -351,10 +506,11 @@ static int decode_sino(raw_t *raw)
     return type==SINO_MSG_B2B?decode_b2b(raw):0;
 }
 
-/* Allocate the MASK/context owned exclusively by this Sino raw_t. */
+/* Allocate the per-PRN6 MASK context owned exclusively by this Sino raw_t. */
 extern int init_sino_b2b(raw_t *raw)
 {
     sino_b2b_ctx_t *ctx;
+    int prn6,sat;
 
     if (!raw) return 0;
     if ((ctx=get_context(raw))) return 1;
@@ -362,8 +518,12 @@ extern int init_sino_b2b(raw_t *raw)
     if (!(ctx=(sino_b2b_ctx_t *)calloc(1,sizeof(*ctx)))) return 0;
 
     ctx->magic=SINO_CTX_MAGIC;
-    ctx->mask.IOD_SSR=-1;
-    ctx->mask.IODP=-1;
+    for (prn6=0;prn6<SINO_PRN6_COUNT;prn6++) {
+        ctx->mask[prn6].IOD_SSR=-1;
+        ctx->mask[prn6].IODP=-1;
+    }
+    for (sat=0;sat<=MAXSAT;sat++) ctx->selected_prn6[sat]=-1;
+    ctx->latest_mask_prn6=0;
     raw->rcv_data=ctx;
     raw->nbyte=raw->len=0;
     memset(raw->buff,0,sizeof(raw->buff));
@@ -375,20 +535,43 @@ extern int init_sino_b2b(raw_t *raw)
 extern void free_sino_b2b(raw_t *raw)
 {
     sino_b2b_ctx_t *ctx=get_context(raw);
+    int prn6;
 
     if (!ctx) return;
+    for (prn6=0;prn6<SINO_PRN6_COUNT;prn6++) {
+        free(ctx->product[prn6]);
+        ctx->product[prn6]=NULL;
+    }
     ctx->magic=0;
     free(ctx);
     raw->rcv_data=NULL;
     raw->nbyte=raw->len=0;
 }
 
-/* Read-only accessor used by focused receiver tests and diagnostics. */
+/* Return the most recently published Type 1 MASK for legacy diagnostics. */
 extern const B2bmask_t *sino_b2b_mask(const raw_t *raw)
 {
     sino_b2b_ctx_t *ctx=get_context(raw);
 
-    return ctx?&ctx->mask:NULL;
+    return ctx?&ctx->mask[ctx->latest_mask_prn6]:NULL;
+}
+
+/* Read-only source-bank accessors used by focused receiver diagnostics. */
+extern const B2bssr_t *sino_b2b_source_product(const raw_t *raw, int prn6,
+                                                int sat)
+{
+    sino_b2b_ctx_t *ctx=get_context(raw);
+
+    if (!ctx||prn6<0||prn6>=SINO_PRN6_COUNT||sat<=0||sat>MAXSAT||
+        !ctx->product[prn6]) return NULL;
+    return ctx->product[prn6]+sat;
+}
+
+extern int sino_b2b_selected_source(const raw_t *raw, int sat)
+{
+    sino_b2b_ctx_t *ctx=get_context(raw);
+
+    return ctx&&sat>0&&sat<=MAXSAT?ctx->selected_prn6[sat]:-1;
 }
 
 /* Feed one byte through sync, length, complete-frame and CRC processing. */

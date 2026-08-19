@@ -188,6 +188,11 @@ EXPORT opt_t sysopts[]={
     {"file-solstatfile",2,  (void *)&filopt_.solstat,    ""     },
     {"file-tracefile",  2,  (void *)&filopt_.trace,      ""     },
     {"file-b2brawfile", 2,  (void *)&filopt_.b2braw,     ""     },
+    {"file-obsfile",    2,  (void *)&filopt_.obsfile,    ""     },
+    {"file-navfile",    2,  (void *)&filopt_.navfile,    ""     },
+    {"file-sp3file",    2,  (void *)&filopt_.sp3file,    ""     },
+    {"file-clkfile",    2,  (void *)&filopt_.clkfile,    ""     },
+    {"file-outfile",    2,  (void *)&filopt_.outfile,    ""     },
     
     {"",0,NULL,""} /* terminator */
 };
@@ -512,6 +517,11 @@ extern void resetsysopts(void)
     filopt_.solstat[0]='\0';
     filopt_.trace  [0]='\0';
     filopt_.b2braw [0]='\0';
+    filopt_.obsfile[0]='\0';
+    filopt_.navfile[0]='\0';
+    filopt_.sp3file[0]='\0';
+    filopt_.clkfile[0]='\0';
+    filopt_.outfile[0]='\0';
     for (i=0;i<2;i++) antpostype_[i]=0;
     elmask_=15.0;
     elmaskar_=0.0;
