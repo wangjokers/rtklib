@@ -176,3 +176,44 @@ summary 和四类 section 数量是否一致，再抽样对比具体 `>` 标题�
 
 阶段 1 的边界是独立解码验证。接入 PPP 主流程应放在后续阶段，在解码结果和
 参考工程输出稳定可比后再做。
+
+## Kafka KREC fixture 与 rtksvr 文件模拟实时回放
+
+`extract_krec_fixture.py` 严格按 metadata line + `value_size` bytes 读取
+`.krec`，验证 `EEEEEEEE`、PL/EL、全部 data item、RTCM3 CRC24Q 和 Sino
+完整帧/CRC32。它只把 dtype 131 写入 `obs.rtcm3`，把 dtype 135/message 72
+和 dtype 134/message 1697 按 Kafka 原始顺序写入同一个 `sino.bin`。
+
+输出还包括 RTKLIB 原生 `.tag` 文件。相对回放节奏来自 Kafka timestamp；tag
+绝对起点来自选中 Sino 帧的 GNSS week/TOW，Kafka timestamp 不作为 GNSS 时间。
+所有输出均位于 ignored `build/realtime-fixture/`。
+
+```powershell
+python app/test_b2b_decoder/extract_krec_fixture.py `
+  --input C:\Users\l\Desktop\workspace\ppp-b2b_merge\rtklib\data\sinognss\captures\sk068_xworgin_20260826_202011_10min.krec `
+  --output-dir build/realtime-fixture `
+  --expect-known-10min
+
+python -m unittest -v app/test_b2b_decoder/test_extract_krec_fixture.py
+```
+
+构建目标 `realtime-replay` 从当前源码链接真实 `rtksvr.c`、stream、RTCM3、
+Sino 和定位模块；测试程序不复制 server 线程。输入路径由命令行传入，并使用
+`STR_FILE ::T::x100::P=4` 进行加速的原生 time-tag 回放。
+
+```bash
+cd app/test_b2b_decoder
+make realtime-replay
+
+../../build/realtime-fixture/test_rtksvr_file_replay \
+  ../../build/realtime-fixture/obs.rtcm3 \
+  ../../build/realtime-fixture/sino.bin \
+  ../../build/realtime-fixture/replay.pos \
+  ../../build/realtime-fixture/replay.trace \
+  ../../build/realtime-fixture/replay_summary.json 100 15
+```
+
+Phase 1 只验收现场数据能够驱动
+`rtksvrthread -> strread -> decoderaw -> update_svr -> rtkpos -> writesol`。
+消息 72 尚不更新 `nav.eph`，Sino `ret==20` 尚不发布到 realtime 主 `nav`，
+因此本测试不要求产生有效 PPP/POS 解。

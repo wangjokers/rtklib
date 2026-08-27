@@ -1,4 +1,5 @@
 CC ?= gcc
+PYTHON ?= python
 
 CFLAGS ?= -std=c99 -O2 -Wall -Wextra
 CFLAGS += -DENAGLO -DENAGAL -DENAQZS -DENACMP -I../../src
@@ -19,6 +20,11 @@ REPLAY_TARGET := test_b2b_replay$(EXEEXT)
 STAGE4E_DIAG_TARGET := test_b2b_rinex4_cnv1_diag$(EXEEXT)
 CBIAS_TARGET := test_b2b_cbias$(EXEEXT)
 OPTIONS_TARGET := test_b2b_options$(EXEEXT)
+RTKSVR_REPLAY_TARGET := ../../build/realtime-fixture/test_rtksvr_file_replay$(EXEEXT)
+RTKSVR_REPLAY_LDLIBS := $(LDLIBS)
+ifeq ($(OS),Windows_NT)
+RTKSVR_REPLAY_LDLIBS += -lws2_32
+endif
 RECEIVER_COMMON_SRCS := test_rtklib_support.c ../../src/b2b.c \
 	../../src/rcvraw.c ../../src/rcv/unicore.c ../../src/rcv/sinan.c
 REPLAY_SRCS := test_b2b_replay.c $(RECEIVER_COMMON_SRCS) \
@@ -29,6 +35,17 @@ STAGE4E_DIAG_SRCS := test_b2b_rinex4_cnv1_diag.c ../../src/b2b.c \
 	../../src/pntpos.c ../../src/sbas.c ../../src/ionex.c
 CBIAS_SRCS := test_b2b_cbias.c ../../src/b2b.c ../../src/rtkcmn.c
 OPTIONS_SRCS := test_b2b_options.c ../../src/options.c
+RTKSVR_REPLAY_SRCS := test_rtksvr_file_replay.c \
+	../../src/b2b.c ../../src/convgpx.c ../../src/convkml.c \
+	../../src/convrnx.c ../../src/datum.c ../../src/download.c \
+	../../src/ephemeris.c ../../src/geoid.c ../../src/gis.c ../../src/ionex.c \
+	../../src/lambda.c ../../src/options.c ../../src/pntpos.c ../../src/postpos.c \
+	../../src/ppp_ar.c ../../src/ppp.c ../../src/preceph.c \
+	$(wildcard ../../src/rcv/*.c) ../../src/rcvraw.c ../../src/rinex.c \
+	../../src/rtcm.c ../../src/rtcm2.c ../../src/rtcm3.c ../../src/rtcm3e.c \
+	../../src/rtkcmn.c ../../src/rtkpos.c ../../src/rtksvr.c ../../src/sbas.c \
+	../../src/solution.c ../../src/stream.c ../../src/streamsvr.c \
+	../../src/tides.c ../../src/tle.c
 
 # Default build keeps stage 1 isolated from rtklib/src. Set USE_RTKCMN=1 after
 # the target rtkcmn.c is build-clean if you want to link the original helpers.
@@ -39,7 +56,8 @@ else
 SRCS := test_b2b_decoder.c b2b_decoder.c
 endif
 
-.PHONY: all sino-receiver unicore-receiver replay stage4e-diag cbias options
+.PHONY: all sino-receiver unicore-receiver replay stage4e-diag cbias options \
+	fixture-test realtime-replay
 
 all: $(TARGET)
 
@@ -54,6 +72,11 @@ stage4e-diag: $(STAGE4E_DIAG_TARGET)
 cbias: $(CBIAS_TARGET)
 
 options: $(OPTIONS_TARGET)
+
+fixture-test:
+	$(PYTHON) -m unittest -v test_extract_krec_fixture.py
+
+realtime-replay: $(RTKSVR_REPLAY_TARGET)
 
 $(TARGET): $(SRCS) b2b_decoder.h
 	$(CC) $(CFLAGS) -o $@ $(SRCS) $(LDLIBS)
@@ -80,3 +103,8 @@ $(CBIAS_TARGET): $(CBIAS_SRCS)
 $(OPTIONS_TARGET): $(OPTIONS_SRCS)
 	$(CC) $(CFLAGS) -DB2B_REPLAY_TEST_ONLY -ffunction-sections \
 		-fdata-sections -o $@ $(OPTIONS_SRCS) -Wl,--gc-sections $(LDLIBS)
+
+$(RTKSVR_REPLAY_TARGET): $(RTKSVR_REPLAY_SRCS)
+	mkdir -p ../../build/realtime-fixture
+	$(CC) $(CFLAGS) -DTRACE -pthread -o $@ $(RTKSVR_REPLAY_SRCS) \
+		$(RTKSVR_REPLAY_LDLIBS) -pthread
