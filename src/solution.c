@@ -1424,7 +1424,7 @@ extern int outprcopts(uint8_t *buff, const prcopt_t *opt)
     };
     const char *s6[]={
         "Broadcast","Precise","Broadcast+SBAS","Broadcast+SSR APC",
-        "Broadcast+SSR CoM","","",""
+        "Broadcast+SSR CoM","Broadcast+PPP-B2b APC","",""
     };
     const char *s7[]={
         "GPS","GLONASS","Galileo","QZSS","BDS","NavIC","SBAS","","",""
@@ -1434,6 +1434,10 @@ extern int outprcopts(uint8_t *buff, const prcopt_t *opt)
     };
     const char *s9[]={
         "OFF","ON","","",""
+    };
+    const char *s10[]={
+        "OFF (exact code only)","DATA (experimental)",
+        "PILOT (experimental)","D/P MEAN (experimental)"
     };
     int i;
     char *p=(char *)buff;
@@ -1458,6 +1462,11 @@ extern int outprcopts(uint8_t *buff, const prcopt_t *opt)
     }
     p+=sprintf(p,"%s tropo opt : %s\r\n",COMMENTH,s5[opt->tropopt]);
     p+=sprintf(p,"%s ephemeris : %s\r\n",COMMENTH,s6[opt->sateph]);
+    if (opt->sateph==EPHOPT_B2b) {
+        const char *xbias=0<=opt->b2b_xbias&&opt->b2b_xbias<4?
+                          s10[opt->b2b_xbias]:"INVALID (disabled)";
+        p+=sprintf(p,"%s b2b xbias : %s\r\n",COMMENTH,xbias);
+    }
     p+=sprintf(p,"%s navi sys  :",COMMENTH);
     for (i=0;sys[i];i++) {
         if (opt->navsys&sys[i]) p+=sprintf(p," %s",s7[i]);

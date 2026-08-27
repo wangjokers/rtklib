@@ -220,7 +220,7 @@ extern void eph2pos(gtime_t time, const eph_t *eph, double *rs, double *dts,
 {
     double tk,M,E,Ek,sinE,cosE,u,r,i,O,sin2u,cos2u,x,y,sinO,cosO,cosi,mu,omge;
     double xg,yg,zg,sino,coso;
-    int n,sys,prn;
+    int n,sys,prn,bds_cnv1;
     
     trace(4,"eph2pos : time=%s sat=%2d\n",time_str(time,3),eph->sat);
     
@@ -235,7 +235,13 @@ extern void eph2pos(gtime_t time, const eph_t *eph, double *rs, double *dts,
         case SYS_CMP: mu=MU_CMP; omge=OMGE_CMP; break;//地球引力常数，地球自传角速度
         default:      mu=MU_GPS; omge=OMGE;     break;
     }
+    bds_cnv1=sys==SYS_CMP&&eph->code==EPHCODE_BDS_CNV1;
+
     M=eph->M0+(sqrt(mu/(eph->A*eph->A*eph->A))+eph->deln)*tk;//计算平近点角 M (E.4.3)
+    if (bds_cnv1) {
+        M=eph->M0+(sqrt(mu/(eph->A*eph->A*eph->A))+eph->deln+
+                   0.5*eph->ndot*tk)*tk;
+    }
     //用牛顿迭代法来计算偏近点角 E。参考 RTKLIB manual P145 (E.4.19) (E.4.4)
     for (n=0,E=M,Ek=0.0;fabs(E-Ek)>RTOL_KEPLER&&n<MAX_ITER_KEPLER;n++) {
         Ek=E; E-=(E-eph->e*sin(E)-M)/(1.0-eph->e*cos(E));
@@ -250,6 +256,7 @@ extern void eph2pos(gtime_t time, const eph_t *eph, double *rs, double *dts,
     
     u=atan2(sqrt(1.0-eph->e*eph->e)*sinE,cosE-eph->e)+eph->omg;
     r=eph->A*(1.0-eph->e*cosE);
+    if (bds_cnv1) r=(eph->A+eph->Adot*tk)*(1.0-eph->e*cosE);
     i=eph->i0+eph->idot*tk;
     sin2u=sin(2.0*u); cos2u=cos(2.0*u);
     u+=eph->cus*sin2u+eph->cuc*cos2u;
@@ -418,11 +425,16 @@ extern void seph2pos(gtime_t time, const seph_t *seph, double *rs, double *dts,
     
     *var=var_uraeph(SYS_SBS,seph->sva);
 }
+/* identify RINEX4 BDS CNV1 ephemeris --------------------------------------*/
+static int eph_is_bds_cnv1(const eph_t *eph)
+{
+    return eph&&eph->code==EPHCODE_BDS_CNV1;
+}
 /* select ephememeris --------------------------------------------------------*/
 static eph_t *seleph(gtime_t time, int sat, int iode, const nav_t *nav)
 {
     double t,tmax,tmin;
-    int i,j=-1,sys,sel;
+    int i,j=-1,sys,sel,cur_cnv1,best_cnv1=0;
     
     trace(4,"seleph  : time=%s sat=%2d iode=%d\n",time_str(time,3),sat,iode);
     //根据传入的sattle number，调用satsys()判断卫星系统，赋值tmax，tmin，sel
@@ -447,10 +459,14 @@ static eph_t *seleph(gtime_t time, int sat, int iode, const nav_t *nav)
             if (timediff(nav->eph[i].toe,time)>=0.0) continue; /* AOD<=0 */
         }
         if ((t=fabs(timediff(nav->eph[i].toe,time)))>tmax) continue;    //筛选星历 -n、o文件时间间隔＜所设阈值
-        if (iode>=0) return nav->eph+i;//星历中的iode正常都＞0，eph指向数组首元素的地址，+i则指向当前循环的元素，
-        if (t<=tmin) {j=i; tmin=t;} /* toe closest to time */ //iode＜0，除需要满足低于阈值，要找出间隔最小的星历用j记录
+        if (iode>=0&&sys!=SYS_CMP) return nav->eph+i;//星历中的iode正常都＞0，eph指向数组首元素的地址，+i则指向当前循环的元素，
+        cur_cnv1=sys==SYS_CMP&&eph_is_bds_cnv1(nav->eph+i);
+        if (j<0||(best_cnv1&&!cur_cnv1)||
+            (best_cnv1==cur_cnv1&&t<=tmin)) {
+            j=i; tmin=t; best_cnv1=cur_cnv1;
+        } /* toe closest to time */ //iode＜0，除需要满足低于阈值，要找出间隔最小的星历用j记录
     }   //更新除离o文件时间最新的toe记录
-    if (iode>=0||j<0) {
+    if (j<0) {
         trace(3,"no broadcast ephemeris: %s sat=%2d iode=%3d\n",
               time_str(time,0),sat,iode);
         return NULL;
@@ -591,7 +607,7 @@ int *svh: 输出参数，存储卫星健康状态。*/
 static int satpos_sbas(gtime_t time, gtime_t teph, int sat, const nav_t *nav,
                         double *rs, double *dts, double *var, int *svh)
 {
-    const sbssatp_t *sbs;
+    const sbssatp_t *sbs=NULL;
     int i;
     
     trace(4,"satpos_sbas: time=%s sat=%2d\n",time_str(time,3),sat);
@@ -647,15 +663,15 @@ static int satpos_ssr(gtime_t time, gtime_t teph, int sat, const nav_t *nav,
     }
     //截止时间一样是属于同一套的时候进行结算
 
+    //时间差计算
 
-
-    t1=timediff(time,ssr->t0[0]);
-    t2=timediff(time,ssr->t0[1]);
-    t3=timediff(time,ssr->t0[2]);
+    t1=timediff(time,ssr->t0[0]);//轨道改正时间差
+    t2=timediff(time,ssr->t0[1]);//钟差改正时间差
+    t3=timediff(time,ssr->t0[2]);//高频钟差改正时间差
     //分别代表不同的一次项，time代表当前发射时刻的时间，
 
 
-    /* ssr orbit and clock correction (ref [4])数据超期检查 */
+    /* ssr orbit and clock correction (ref [4])数据超期检查通常为90s */
     if (fabs(t1)>MAXAGESSR||fabs(t2)>MAXAGESSR) {
         trace(2,"age of ssr error: %s sat=%2d t=%.0f %.0f\n",time_str(time,0),
               sat,t1,t2);
@@ -668,10 +684,10 @@ static int satpos_ssr(gtime_t time, gtime_t teph, int sat, const nav_t *nav,
     for (i=0;i<3;i++) deph[i]=ssr->deph[i]+ssr->ddeph[i]*t1;//轨道修正
     dclk=ssr->dclk[0]+ssr->dclk[1]*t2+ssr->dclk[2]*t2*t2;   //钟差修正，加了一个加速度二次线插值
     
-    /* ssr highrate clock correction (ref [4]) */
+    /* ssr highrate clock correction (ref [4])高频钟差改正， */
     if (ssr->iod[0]==ssr->iod[2]&&ssr->t0[2].time&&fabs(t3)<MAXAGESSR_HRCLK) {
         dclk+=ssr->hrclk;
-    }
+    }//这里的10m似乎也不太稳健。
     if (norm(deph,3)>MAXECORSSR||fabs(dclk)>MAXCCORSSR) {
         trace(3,"invalid ssr correction: %s deph=%.1f dclk=%.1f\n",
               time_str(time,0),norm(deph,3),dclk);
@@ -724,10 +740,161 @@ static int satpos_ssr(gtime_t time, gtime_t teph, int sat, const nav_t *nav,
     /* variance by ssr ura */
     *var=var_urassr(ssr->ura);
     //URA 表示误差范围，转换为方差。
-    //实现：var_urassr 根据 SSR 的精度指标计算。
+    //实现：var_urassr 根据 SSR 的精度指标计算。sssr里面会提供这个URA。
     trace(5,"satpos_ssr: %s sat=%2d deph=%6.3f %6.3f %6.3f er=%6.3f %6.3f %6.3f dclk=%6.3f var=%6.3f\n",
           time_str(time,2),sat,deph[0],deph[1],deph[2],er[0],er[1],er[2],dclk,*var);
     
+    return 1;
+}
+/* PPP-B2b finite-value guard ------------------------------------------------*/
+static int b2b_satpos_finite(double value)
+{
+    return value==value&&fabs(value)<HUGE_VAL;
+}
+/* PPP-B2b ephemeris age limit by system ------------------------------------*/
+static int b2b_eph_tmax(int sys, double *tmax)
+{
+    if (!tmax) return 0;
+    switch (sys) {
+        case SYS_GPS: *tmax=MAXDTOE+1.0;     return 1;
+        case SYS_CMP: *tmax=MAXDTOE_CMP+1.0; return 1;
+    }
+    *tmax=0.0;
+    return 0;
+}
+
+/* PPP-B2b IODN match rule ---------------------------------------------------*/
+static int b2b_eph_iodn_match(const eph_t *eph, int sys, int iodn)
+{
+    if (!eph) return 0;
+    if (sys==SYS_GPS) return eph->iode==iodn;
+    if (sys==SYS_CMP) return eph->iodc==iodn;
+    return 0;
+}
+/* select broadcast ephemeris for PPP-B2b ------------------------------------
+* args   : gtime_t time I   ephemeris selection time (GPST)
+*          int     sat  I   RTKLIB satellite number
+*          int     iodn I   PPP-B2b broadcast ephemeris IODN/IODC
+*          nav_t  *nav  I   navigation data
+* return : matched healthy broadcast ephemeris, or NULL
+* notes  : This selector is deliberately separate from seleph(). PPP-B2b must
+*          match the exact broadcast ephemeris generation referenced by IODN:
+*          GPS uses eph.iode and BDS uses eph.iodc. Galileo, GLONASS and other
+*          systems remain disabled until their IODN mapping is verified.
+*-----------------------------------------------------------------------------*/
+static eph_t *seleph_B2b(gtime_t time, int sat, int iodn, const nav_t *nav)
+{
+    double t,tmax,tmin;
+    int i,j=-1,sys=satsys(sat,NULL),cur_cnv1,best_cnv1=0;
+
+    trace(4,"seleph_B2b: time=%s sat=%2d iodn=%d\n",
+          time_str(time,3),sat,iodn);
+
+    if (!nav||!nav->eph||!b2b_eph_tmax(sys,&tmax)) {
+        trace(3,"unsupported b2b broadcast ephemeris: %s sat=%2d iodn=%d\n",
+              time_str(time,0),sat,iodn);
+        return NULL;
+    }
+    tmin=tmax+1.0;
+
+    for (i=0;i<nav->n;i++) {
+        if (nav->eph[i].sat!=sat) continue;
+        if (sys==SYS_CMP&&!eph_is_bds_cnv1(nav->eph+i)) continue;
+        if (nav->eph[i].svh) continue;
+        if (!b2b_eph_iodn_match(nav->eph+i,sys,iodn)) continue;
+        if ((t=fabs(timediff(nav->eph[i].toe,time)))>tmax) continue;
+        cur_cnv1=sys==SYS_CMP&&eph_is_bds_cnv1(nav->eph+i);
+        if (j<0||t<tmin-DTTOL||(fabs(t-tmin)<=DTTOL&&cur_cnv1&&!best_cnv1)) {
+            j=i;
+            tmin=t;
+            best_cnv1=cur_cnv1;
+        }
+    }
+    if (j<0) {
+        trace(3,"no b2b broadcast ephemeris: %s sat=%2d iodn=%d\n",
+              time_str(time,0),sat,iodn);
+        return NULL;
+    }
+    return nav->eph+j;
+}
+/* satellite position/clock from one selected broadcast ephemeris ------------*/
+static int ephpos_B2b(gtime_t time, const eph_t *eph, double *rs, double *dts,
+                      double *var, int *svh)
+{
+    double rst[3],dtst[1],tt=1E-3;
+    int i;
+
+    if (!eph||!rs||!dts||!var||!svh) return 0;
+
+    eph2pos(time,eph,rs,dts,var);
+    time=timeadd(time,tt);
+    eph2pos(time,eph,rst,dtst,var);
+    for (i=0;i<3;i++) {
+        rs[i+3]=(rst[i]-rs[i])/tt;
+        if (!b2b_satpos_finite(rs[i])||!b2b_satpos_finite(rs[i+3])) {
+            *svh=-1;
+            return 0;
+        }
+    }
+    dts[1]=(dtst[0]-dts[0])/tt;
+    if (!b2b_satpos_finite(dts[0])||!b2b_satpos_finite(dts[1])) {
+        *svh=-1;
+        return 0;
+    }
+    *svh=eph->svh;
+    return *svh==0;
+}
+/* satellite position and clock with PPP-B2b orbit/clock correction ----------*/
+static int satpos_B2b(gtime_t time, gtime_t teph, int sat, const nav_t *nav,
+                      double *rs, double *dts, double *var, int *svh)
+{
+    const B2bssr_t *b2b;
+    eph_t *eph;
+    double delta[3],variance,orbit_age,clock_age;
+    int i;
+
+    trace(4,"satpos_B2b: time=%s sat=%2d\n",time_str(time,3),sat);
+
+    if (svh) *svh=-1;
+    if (!nav||!rs||!dts||!var||!svh||sat<=0||MAXSAT<sat) return 0;
+
+    b2b=nav->B2bssr+sat; /* WARNING: PPP-B2b storage uses [sat], not [sat-1]. */
+    if (!b2b_orbit_clock_ready(time,b2b,&orbit_age,&clock_age)) {
+        trace(3,"b2b orbit/clock not ready: %s sat=%2d age=%.0f %.0f\n",
+              time_str(time,0),sat,orbit_age,clock_age);
+        return 0;
+    }
+    if (!b2b_urai_variance(b2b->ura,&variance)) {
+        trace(3,"invalid b2b urai: %s sat=%2d urai=%d\n",
+              time_str(time,0),sat,b2b->ura);
+        return 0;
+    }
+    if (!(eph=seleph_B2b(teph,sat,b2b->iodn,nav))) return 0;
+
+    if (!ephpos_B2b(time,eph,rs,dts,var,svh)) return 0;
+    if (!b2b_rac_to_ecef(rs,rs+3,b2b->deph,delta)) {
+        trace(3,"invalid b2b rac basis: %s sat=%2d\n",time_str(time,0),sat);
+        *svh=-1;
+        return 0;
+    }
+    for (i=0;i<3;i++) {
+        rs[i]-=delta[i];
+        if (!b2b_satpos_finite(rs[i])) {
+            *svh=-1;
+            return 0;
+        }
+    }
+    if (!b2b_clock_correct(dts[0],b2b->dclk[0],dts)) {
+        *svh=-1;
+        return 0;
+    }
+    *var=variance;
+
+    trace(5,"satpos_B2b: %s sat=%2d deph=%6.3f %6.3f %6.3f "
+          "delta=%6.3f %6.3f %6.3f dclk=%6.3f var=%6.3f\n",
+          time_str(time,2),sat,b2b->deph[0],b2b->deph[1],b2b->deph[2],
+          delta[0],delta[1],delta[2],b2b->dclk[0],*var);
+
     return 1;
 }
 /* satellite position and clock ------------------------------------------------
@@ -758,6 +925,7 @@ extern int satpos(gtime_t time, gtime_t teph, int sat, int ephopt,
         case EPHOPT_BRDC  : return ephpos     (time,teph,sat,nav,-1,rs,dts,var,svh);//广播星历
         case EPHOPT_SBAS  : return satpos_sbas(time,teph,sat,nav,   rs,dts,var,svh);//SBAS，美国的一种修正方式
         case EPHOPT_SSRAPC: return satpos_ssr (time,teph,sat,nav, 0,rs,dts,var,svh);//参考天线相位中心
+        case EPHOPT_B2b   : return satpos_B2b (time,teph,sat,nav,   rs,dts,var,svh);
         case EPHOPT_SSRCOM: return satpos_ssr (time,teph,sat,nav, 1,rs,dts,var,svh);//参考质心，还需要天线相位中心改正
         case EPHOPT_PREC  ://精密星历，SP3，clk
             if (!peph2pos(time,sat,nav,1,rs,dts,var)) break; else return 1;
@@ -807,7 +975,7 @@ extern void satposs(gtime_t teph, const obsd_t *obs, int n, const nav_t *nav,
         for (j=0,pr=0.0;j<NFREQ;j++) if ((pr=obs[i].P[j])!=0.0) break;//遍历各频，寻找非0的可用伪距
         //pr是当前卫星的伪距值，i是卫星，j是频点
        
-
+         
 
         if (j>=NFREQ) {
             trace(3,"no pseudorange %s sat=%2d\n",time_str(obs[i].time,3),obs[i].sat);

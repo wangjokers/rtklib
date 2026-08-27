@@ -40,6 +40,9 @@ static const char *help[]={
 " Command line options are as follows ([]:default). With -k option, the",
 " processing options are input from the configuration file. In this case,",
 " command line options precede options in the configuration file.",
+" Input file arguments may be omitted if file-obsfile and file-navfile are",
+" set in the configuration file. Command-line input files replace all",
+" configured input files, and -o precedes file-outfile.",
 "",
 " -?        print help",
 " -k file   input options from configuration file [off]",
@@ -183,22 +186,35 @@ int main(int argc, char **argv)
 
 
 
+    /* use the configured input set only when no positional files were given */
+    if (n==0&&(*filopt.obsfile||*filopt.navfile||*filopt.sp3file||
+               *filopt.clkfile)) {
+        if (!*filopt.obsfile) {
+            showmsg("error : file-obsfile is required for config-only input");
+            return -2;
+        }
+        if (!*filopt.navfile) {
+            showmsg("error : file-navfile is required for config-only input");
+            return -2;
+        }
+        infile[n++]=filopt.obsfile;
+        infile[n++]=filopt.navfile;
+        if (*filopt.sp3file) infile[n++]=filopt.sp3file;
+        if (*filopt.clkfile) infile[n++]=filopt.clkfile;
+    }
+    if (!*outfile&&*filopt.outfile) outfile=filopt.outfile;
+
+
+
      /*2.0版本用gps进行测试的ppp*/
     //n = 3;
     //infile[0] = "D:\\Desktop\\demo04\\test01\\chan2700.20o";
-    //infile[1] = "D:\\Desktop\\demo04\\test01\\brdc2700.20n";
+    //infile[1] = "D:\\Desktop\\demo \\test01\\brdc2700.20n";
     //infile[2] = "D:\\Desktop\\demo04\\test01\\igs21246.sp3";
     ////infile[3] = "D:\\Desktop\\demo04\\test01\\WUM0MGXFIN_20192740000_01D_30S_CLK.CLK";
     //outfile = "D:\\Desktop\\demo04\\test01\\chan_source_cmpbds.pos";
     //3.04版本用混合系统包含北斗的进行测试
-    n = 4;
-    infile[0] = "d:\\desktop\\data2\\wuh20320.25o";
-    infile[1] = "d:\\desktop\\data2\\brdm0320.25p";
-    infile[2] = "d:\\desktop\\data2\\WUM0MGXFIN_20250320000_01D_05M_ORB.SP3";
-    infile[3] = "d:\\desktop\\data2\\WUM0MGXFIN_20250320000_01D_30S_CLK.CLK";
-    outfile = "d:\\desktop\\data2\\bds_result_2_B1I_B2a.pos";
-    //printf("opening file: [%s]\n", infile[0]);
-    //printf("path length  : %zu\n", strlen(infile[0]));
+    //igmas版本的开发
     //用林提供的数据运行发现运行失败，只选中北斗无数据，加了gps发现解算的数据质量不好，中间丢失了大块的时间段
     
 

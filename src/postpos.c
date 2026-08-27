@@ -54,6 +54,7 @@
 
 /* constants/global variables ------------------------------------------------*/
 
+#ifndef B2B_REPLAY_TEST_ONLY
 static pcvs_t pcvss={0};        /* receiver antenna parameters */
 static pcvs_t pcvsr={0};        /* satellite antenna parameters */
 static obs_t obss={0};          /* observation data ，存储单个历元下的所有的文件*/
@@ -78,7 +79,106 @@ static char rtcm_file[1024]=""; /* rtcm data file */
 static char rtcm_path[1024]=""; /* rtcm data path */
 static rtcm_t rtcm;             /* rtcm control struct */
 static FILE *fp_rtcm=NULL;      /* rtcm data file pointer */
+#endif
 
+typedef struct {
+    raw_t raw;                  /* Unicore receiver decoder state */
+    FILE *fp;                   /* current B2b raw file */
+    char path[MAXSTRPATH];      /* current B2b raw file path */
+    int format;                 /* receiver raw format */
+    int initialized;            /* raw decoder initialization state */
+    int eof;                    /* end-of-file state */
+    int pending;                /* one decoded future frame is pending */
+    gtime_t pending_rx_time;    /* receiver time of pending frame */
+} b2b_replay_t;
+
+/* identify a Stage 4B post-processing B2b raw input -------------------------*/
+extern int b2b_replay_input_format(const char *path)
+{
+    const char *ext;
+
+    if (!path||!(ext=strrchr(path,'.'))) return -1;
+    if (!strcmp(ext,".B2bBin")||!strcmp(ext,".b2b")||
+        !strcmp(ext,".B2b")) return STRFMT_UNICORE;
+    return -1;
+}
+/* map the stable user option to the receiver raw dispatcher ----------------*/
+extern int b2b_replay_format_from_option(int option)
+{
+    switch (option) {
+        case B2BFMT_UNICORE: return STRFMT_UNICORE;
+        case B2BFMT_SINO: return STRFMT_SINO;
+    }
+    return -1;
+}
+/* close one post-processing B2b replay session -----------------------------*/
+extern void b2b_replay_close(b2b_replay_t *replay)
+{
+    if (!replay) return;
+    if (replay->fp) fclose(replay->fp);
+    if (replay->initialized) free_raw(&replay->raw);
+    memset(replay,0,sizeof(*replay));
+}
+/* open one post-processing B2b replay session ------------------------------*/
+extern int b2b_replay_open(b2b_replay_t *replay, const char *path, int format)
+{
+    if (!replay||!path||
+        (format!=STRFMT_UNICORE&&format!=STRFMT_SINO)) return 0;
+
+    memset(replay,0,sizeof(*replay));
+    replay->format=format;
+    strncpy(replay->path,path,sizeof(replay->path)-1);
+    replay->path[sizeof(replay->path)-1]='\0';
+
+    if (!init_raw(&replay->raw,format)) {
+        memset(replay,0,sizeof(*replay));
+        return 0;
+    }
+    replay->initialized=1;
+    if (!(replay->fp=fopen(path,"rb"))) {
+        b2b_replay_close(replay);
+        return 0;
+    }
+    return 1;
+}
+/* publish only B2b frames available at the current observation epoch -------*/
+extern int b2b_replay_update(b2b_replay_t *replay, nav_t *nav,
+                             gtime_t obs_time)
+{
+    int ret,n=0;
+
+    if (!replay||!nav||!replay->fp) return 0;
+
+    if (replay->pending) {
+        if (timediff(replay->pending_rx_time,obs_time)>DTTOL) return 0;
+        n+=b2b_update_nav_from_raw(nav,&replay->raw);
+        replay->pending=0;
+        replay->pending_rx_time.time=0;
+        replay->pending_rx_time.sec=0.0;
+    }
+    while (!replay->eof) {
+        ret=input_rawf(&replay->raw,replay->format,replay->fp);
+        if (ret==-2) {
+            replay->eof=1;
+            break;
+        }
+        if (ret<0) {
+            trace(2,"B2b replay decode error: path=%s\n",replay->path);
+            return -1;
+        }
+        if (ret==0) continue;
+
+        if (timediff(replay->raw.time,obs_time)>DTTOL) {
+            replay->pending=1;
+            replay->pending_rx_time=replay->raw.time;
+            break;
+        }
+        n+=b2b_update_nav_from_raw(nav,&replay->raw);
+    }
+    return n;
+}
+
+#ifndef B2B_REPLAY_TEST_ONLY
 /* show message and check break ----------------------------------------------*/
 static int checkbrk(const char *format, ...)
 {
@@ -120,10 +220,13 @@ static void outrpos(FILE *fp, const double *r, const solopt_t *opt)
     }
 }
 /* output header -------------------------------------------------------------*/
-static void outheader(FILE *fp, char **file, int n, const prcopt_t *popt,
+static void outheader(FILE *fp, char **file, int n, const char *b2b_path,
+                      int b2b_format, const prcopt_t *popt,
                       const solopt_t *sopt)
 {
     const char *s1[]={"GPST","UTC","JST"};
+    const char *b2b_name=b2b_format==STRFMT_UNICORE?"Unicore":
+                         b2b_format==STRFMT_SINO?"SinoGNSS":"unknown";
     gtime_t ts,te;
     double t1,t2;
     int i,j,w1,w2;
@@ -143,6 +246,10 @@ static void outheader(FILE *fp, char **file, int n, const prcopt_t *popt,
         }
         for (i=0;i<n;i++) {
             fprintf(fp,"%s inp file  : %s\n",COMMENTH,file[i]);
+        }
+        if (b2b_path&&*b2b_path) {
+            fprintf(fp,"%s b2b file  : %s\n",COMMENTH,b2b_path);
+            fprintf(fp,"%s b2b format: %s\n",COMMENTH,b2b_name);
         }
         for (i=0;i<obss.n;i++)    if (obss.data[i].rcv==1) break;
         for (j=obss.n-1;j>=0;j--) if (obss.data[j].rcv==1) break;
@@ -234,7 +341,8 @@ static void update_rtcm_ssr(gtime_t time)
     }
 }
 /* input obs data, navigation messages and sbas correction -------------------*/
-static int inputobs(obsd_t *obs, int solq, const prcopt_t *popt)
+static int inputobs(obsd_t *obs, int solq, const prcopt_t *popt,
+                    b2b_replay_t *b2b)
 {
     gtime_t time={0};
     int i,nu,nr,n=0;
@@ -278,6 +386,10 @@ static int inputobs(obsd_t *obs, int solq, const prcopt_t *popt)
         /* update rtcm ssr corrections */
         if (*rtcm_file) {
             update_rtcm_ssr(obs[0].time);
+        }
+        if (b2b&&b2b_replay_update(b2b,&navs,obs[0].time)<0) {
+            trace(2,"B2b replay stopped at observation epoch: %s\n",
+                  time_str(obs[0].time,3));
         }
     }
     else { /* input backward data */
@@ -324,9 +436,159 @@ static void corr_phase_bias_ssr(obsd_t *obs, int n, const nav_t *nav)
         obs[i].L[j]-=nav->ssr[obs[i].sat-1].pbias[code-1]*freq/CLIGHT;
     }
 }
+/* multi-satellite pseudorange fault injection option ------------------------*/
+#define MFAULT_MAXSAT 5
+
+typedef struct {
+    int enable;                     /* 0:off 1:on */
+    int continuous;                 /* 0:single-window 1:continuous window */
+    int nsat;                       /* number of configured satellites */
+    int sats[MFAULT_MAXSAT];        /* RTKLIB sat no or system PRN */
+    double mag;                     /* fixed pseudorange bias in meters */
+    gtime_t ts;                     /* injection start time */
+    gtime_t te;                     /* injection end time */
+    int has_ts;                     /* start time configured */
+    int has_te;                     /* end time configured */
+} mfault_opt_t;
+/* parse compact time string YYYYMMDDhhmmss ----------------------------------*/
+static int parse_compact_time(const char *src, gtime_t *time)
+{
+    char buff[64];
+    
+    if (!src||strlen(src)<14) return 0;
+    
+    sprintf(buff,"%.4s %.2s %.2s %.2s %.2s %.2s",
+            src,src+4,src+6,src+8,src+10,src+12);
+    return str2time(buff,0,(int)strlen(buff),time)==0;
+}
+/* read multi-satellite fault injection options from misc-pppopt -------------*/
+static void get_mfaultopt(const char *pppopt, mfault_opt_t *fault)
+{
+    const char *p;
+    char mode[16]="",ts[32]="",te[32]="";
+    int i;
+    
+    fault->enable=0;
+    fault->continuous=1;
+    fault->nsat=0;
+    fault->mag=0.0;
+    fault->ts.time=0;
+    fault->te.time=0;
+    fault->has_ts=0;
+    fault->has_te=0;
+    for (i=0;i<MFAULT_MAXSAT;i++) fault->sats[i]=0;
+    
+    if (!pppopt||!*pppopt) return;
+    
+    if ((p=strstr(pppopt,"-MFAULT=")))        sscanf(p,"-MFAULT=%d",&fault->enable);
+    if ((p=strstr(pppopt,"-MFAULT_MAG=")))    sscanf(p,"-MFAULT_MAG=%lf",&fault->mag);
+    if ((p=strstr(pppopt,"-MFAULT_MODE="))&&sscanf(p,"-MFAULT_MODE=%15s",mode)==1) {
+        if (mode[0]=='0'||mode[0]=='O'||mode[0]=='o') fault->continuous=0;
+    }
+    if ((p=strstr(pppopt,"-MFAULT_TS="))&&sscanf(p,"-MFAULT_TS=%31s",ts)==1) {
+        fault->has_ts=parse_compact_time(ts,&fault->ts);
+    }
+    if ((p=strstr(pppopt,"-MFAULT_TE="))&&sscanf(p,"-MFAULT_TE=%31s",te)==1) {
+        fault->has_te=parse_compact_time(te,&fault->te);
+    }
+    for (i=0;i<MFAULT_MAXSAT;i++) {
+        char key[32],fmt[32];
+        int sat=0;
+        sprintf(key,"-MFAULT_SAT%d=",i+1);
+        sprintf(fmt,"-MFAULT_SAT%d=%%d",i+1);
+        if ((p=strstr(pppopt,key))&&sscanf(p,fmt,&sat)==1&&sat>0&&
+            fault->nsat<MFAULT_MAXSAT) {
+            fault->sats[fault->nsat++]=sat;
+        }
+    }
+    if (!fault->has_ts&&fault->has_te) {
+        fault->ts=fault->te;
+        fault->has_ts=1;
+    }
+    if (fault->has_ts&&!fault->has_te) {
+        fault->te=fault->ts;
+        fault->has_te=1;
+    }
+}
+/* test whether current epoch is within configured fault window --------------*/
+static int mfault_time_active(const mfault_opt_t *fault, gtime_t time)
+{
+    if (!fault->enable||fault->mag==0.0) return 0;
+    if (!fault->has_ts||!fault->has_te) return 0;
+    
+    if (fault->continuous) {
+        if (timediff(time,fault->ts)<-DTTOL) return 0;
+        if (timediff(time,fault->te)> DTTOL) return 0;
+    }
+    else {
+        if (fabs(timediff(time,fault->ts))>DTTOL) return 0;
+    }
+    return 1;
+}
+/* test whether current satellite matches configured fault list --------------*/
+static int mfault_sat_active(const mfault_opt_t *fault, int sat)
+{
+    int i,prn=0;
+    
+    if (fault->nsat<=0) return 0;
+    
+    satsys(sat,&prn);
+    for (i=0;i<fault->nsat;i++) {
+        if (fault->sats[i]==sat||fault->sats[i]==prn) return 1;
+    }
+    return 0;
+}
+/* inject fixed pseudorange faults into selected rover satellites ------------
+ * This helper is intentionally placed in postpos.c/procpos() rather than PPP
+ * internals. It edits only obs[i].P[j] before rtkpos(), so the PPP/EKF model,
+ * residual builder, and filter core remain unchanged.
+ *
+ * Supported misc-pppopt keys:
+ *   -MFAULT=1
+ *   -MFAULT_TS=YYYYMMDDhhmmss
+ *   -MFAULT_TE=YYYYMMDDhhmmss
+ *   -MFAULT_SAT1=118 ... -MFAULT_SAT5=130
+ *   -MFAULT_MAG=50.0
+ *   -MFAULT_MODE=CONT|ONCE
+ *
+ * Notes:
+ *   1) Only pseudorange P[j] is modified. L/D/SNR are untouched.
+ *   2) Only rover observations (rcv==1) are modified.
+ *   3) The same fixed magnitude is applied to every configured satellite.
+ *   4) sat can be either RTKLIB internal sat no or per-system PRN.
+ *-------------------------------------------------------------------------*/
+static void inject_multisat_pseudorange_fault(obsd_t *obs, int n,
+                                              const prcopt_t *popt)
+{
+    mfault_opt_t fault={0};
+    char tstr[32];
+    int i,j,prn=0;
+    
+    get_mfaultopt(popt->pppopt,&fault);
+    
+    if (!mfault_time_active(&fault,obs[0].time)) return;
+    
+    time2str(obs[0].time,tstr,2);
+    for (i=0;i<n;i++) {
+        if (obs[i].rcv!=1) continue; /* keep reference observations intact */
+        if (!mfault_sat_active(&fault,obs[i].sat)) continue;
+        
+        satsys(obs[i].sat,&prn);
+        for (j=0;j<NFREQ+NEXOBS;j++) {
+            double p0;
+            
+            if (obs[i].P[j]==0.0) continue;
+            
+            p0=obs[i].P[j];
+            obs[i].P[j]+=fault.mag;
+            trace(2,"%s MFAULT_INJ: sat=%2d prn=%2d type=P%d mag=%8.3f before=%12.4f after=%12.4f\n",
+                  tstr,obs[i].sat,prn,j+1,fault.mag,p0,obs[i].P[j]);
+        }
+    }
+}
 /* process positioning -------------------------------------------------------*/
 static void procpos(FILE *fp, const prcopt_t *popt, const solopt_t *sopt,
-                    int mode)
+                    int mode, b2b_replay_t *b2b)
 {
     gtime_t time={0};
     sol_t sol={{0}};
@@ -343,7 +605,7 @@ static void procpos(FILE *fp, const prcopt_t *popt, const solopt_t *sopt,
     rtkinit(&rtk,popt);
     rtcm_path[0]='\0';
     
-    while ((nobs=inputobs(obs,rtk.sol.stat,popt))>=0) {//读取o文件下一个历元所有卫星的数据（所有系统的卫星都读）
+    while ((nobs=inputobs(obs,rtk.sol.stat,popt,b2b))>=0) {//读取o文件下一个历元所有卫星的数据（所有系统的卫星都读）
         
         /* exclude satellites */
         for (i=n=0;i<nobs;i++) {
@@ -357,6 +619,11 @@ static void procpos(FILE *fp, const prcopt_t *popt, const solopt_t *sopt,
             corr_phase_bias_ssr(obs,n,&navs);
         }
         //进入不同的模式的定位计算
+        /* Inject configurable multi-satellite pseudorange faults immediately
+         * before rtkpos(). This is the safest insertion point in post-processing:
+         * observation decoding and screening are already done, while PPP/EKF
+         * internals remain untouched. */
+        inject_multisat_pseudorange_fault(obs,n,popt);
         if (!rtkpos(&rtk,obs,n,&navs)) continue;
         
         if (mode==0) { /* forward/backward */
@@ -537,16 +804,19 @@ static void readpreceph(char **infile, int n, const prcopt_t *prcopt,
     
     /* read precise ephemeris files */
     for (i=0;i<n;i++) {//过滤掉包含 %r 或 %b 的文件（通常用于表示基站和流动站文件），并调用 readsp3 函数读取精密星历数据
+        if (b2b_replay_input_format(infile[i])>=0) continue;
         if (strstr(infile[i],"%r")||strstr(infile[i],"%b")) continue;
         readsp3(infile[i],nav,0);
     }
     /* read precise clock files */
     for (i=0;i<n;i++) {
+        if (b2b_replay_input_format(infile[i])>=0) continue;
         if (strstr(infile[i],"%r")||strstr(infile[i],"%b")) continue;
         readrnxc(infile[i],nav);
     }
     /* read sbas message files */
     for (i=0;i<n;i++) {
+        if (b2b_replay_input_format(infile[i])>=0) continue;
         if (strstr(infile[i],"%r")||strstr(infile[i],"%b")) continue;
         sbsreadmsg(infile[i],prcopt->sbassatsel,sbs);
     }
@@ -608,6 +878,7 @@ static int readobsnav(gtime_t ts, gtime_t te, double ti, char **infile,
     //遍历infile[]，调用readrnxt（）读取文件
     for (i=0;i<n;i++) {
         if (checkbrk("")) return 0;
+        if (b2b_replay_input_format(infile[i])>=0) continue;
         
         if (index[i]!=ind) {         //如果下标和上一次循环的不同
             if (obs->n>nobs) rcv++;  //rcv=1:rover,2:reference
@@ -825,26 +1096,29 @@ static void closeses(nav_t *nav, pcvs_t *pcvs, pcvs_t *pcvr)
 static void setpcv(gtime_t time, prcopt_t *popt, nav_t *nav, const pcvs_t *pcvs,
                    const pcvs_t *pcvr, const sta_t *sta)
 {
-    pcv_t *pcv,pcv0={0};
+     pcv_t *pcv,pcv0={0};
     double pos[3],del[3];
     int i,j,mode=PMODE_DGPS<=popt->mode&&popt->mode<=PMODE_FIXED;
     char id[64];
     
     /* set satellite antenna parameters */
     for (i=0;i<MAXSAT;i++) {
-        nav->pcvs[i]=pcv0;
-        if (!(satsys(i+1,NULL)&popt->navsys)) continue;
+        nav->pcvs[i]=pcv0;                              //初始化卫星天线参数
+        if (!(satsys(i+1,NULL)&popt->navsys)) continue; //搜索卫星天线参数
         if (!(pcv=searchpcv(i+1,"",time,pcvs))) {
             satno2id(i+1,id);
             trace(3,"no satellite antenna pcv: %s\n",id);
             continue;
         }
-        nav->pcvs[i]=*pcv;
+        nav->pcvs[i]=*pcv;      // 将找到的天线参数赋值给卫星
     }
-    for (i=0;i<(mode?2:1);i++) {
+    for (i=0;i<(mode?2:1);i++) {// 根据模式决定处理1个还是2个接收机
         popt->pcvr[i]=pcv0;
-        if (!strcmp(popt->anttype[i],"*")) { /* set by station parameters */
-            strcpy(popt->anttype[i],sta[i].antdes);
+        // 如果anttype为"*"或空字符串，从测站参数中读取天线类型
+        if (!strcmp(popt->anttype[i],"*")||!popt->anttype[i][0]) {
+            if (sta[i].antdes[0]) {
+                strcpy(popt->anttype[i],sta[i].antdes);// 使用测站参数中的天线描述
+            }
             if (sta[i].deltype==1) { /* xyz */
                 if (norm(sta[i].pos,3)>0.0) {
                     ecef2pos(sta[i].pos,pos);
@@ -856,13 +1130,26 @@ static void setpcv(gtime_t time, prcopt_t *popt, nav_t *nav, const pcvs_t *pcvs,
                 for (j=0;j<3;j++) popt->antdel[i][j]=stas[i].del[j];
             }
         }
+        // 四级日志：记录查找的接收机天线类型
+       /* tracet(4,"setpcv: searching rec ant type='%s' in %d entries\n",popt->anttype[i],pcvr->n);*/
         if (!(pcv=searchpcv(0,popt->anttype[i],time,pcvr))) {
             trace(2,"no receiver antenna pcv: %s\n",popt->anttype[i]);
+            // 四级日志：查找失败，列出所有可用的接收机天线类型
+            tracet(4,"setpcv: search failed, available rec ant types:\n");
+            for (j=0;j<pcvr->n&&j<10;j++) {
+                tracet(4,"  [%d] type='%s' code='%s' sat=%d\n",
+                    j,pcvr->pcv[j].type,pcvr->pcv[j].code,pcvr->pcv[j].sat);
+            }
             *popt->anttype[i]='\0';
             continue;
         }
         strcpy(popt->anttype[i],pcv->type);
-        popt->pcvr[i]=*pcv;
+        popt->pcvr[i]=*pcv;// 将天线参数赋值给接收机
+        // 四级日志：验证接收机天线参数加载（只输出到trace文件）
+        tracet(4,"setpcv: rec ant loaded type=%s off[0]=[%.3f %.3f %.3f] off[2]=[%.3f %.3f %.3f]\n",
+            popt->pcvr[i].type,
+            popt->pcvr[i].off[0][0], popt->pcvr[i].off[0][1], popt->pcvr[i].off[0][2],
+            popt->pcvr[i].off[2][0], popt->pcvr[i].off[2][1], popt->pcvr[i].off[2][2]);
     }
 }
 /* read ocean tide loading parameters ----------------------------------------*/
@@ -876,6 +1163,7 @@ static void readotl(prcopt_t *popt, const char *file, const sta_t *sta)
 }
 /* write header to output file -----------------------------------------------*/
 static int outhead(const char *outfile, char **infile, int n,
+                   const char *b2b_path, int b2b_format,
                    const prcopt_t *popt, const solopt_t *sopt)
 {
     FILE *fp=stdout;
@@ -891,7 +1179,7 @@ static int outhead(const char *outfile, char **infile, int n,
         }
     }
     /* output header */
-    outheader(fp,infile,n,popt,sopt);
+    outheader(fp,infile,n,b2b_path,b2b_format,popt,sopt);
     
     if (*outfile) fclose(fp);
     
@@ -911,21 +1199,65 @@ static int execses(gtime_t ts, gtime_t te, double ti, const prcopt_t *popt,
 {
     FILE *fp;
     prcopt_t popt_=*popt;
+    b2b_replay_t *b2b=NULL;
+    const char *b2b_path=NULL;
     char tracefile[1024],statfile[1024],path[1024],*ext;
+    char b2b_resolved[MAXSTRPATH]="";
+    int i,b2b_format=-1,b2b_count=0;
     
     trace(3,"execses : n=%d outfile=%s\n",n,outfile);
+
+    for (i=0;i<n;i++) {
+        int format=b2b_replay_input_format(infile[i]);
+        if (format<0) continue;
+        b2b_path=infile[i];
+        b2b_format=format;
+        b2b_count++;
+    }
+    /* Explicit auxiliary input is separate from the ordinary RINEX/SP3 list.
+     * NOTE: legacy Unicore extensions above remain active only when no
+     * explicit path/format pair is configured. */
+    if (*fopt->b2braw||popt->b2b_format!=B2BFMT_OFF) {
+        int format=b2b_replay_format_from_option(popt->b2b_format);
+
+        if (!*fopt->b2braw||format<0) {
+            showmsg("error : incomplete B2b raw path/format configuration");
+            trace(1,"incomplete B2b raw path/format configuration: path=%s option=%d\n",
+                  fopt->b2braw,popt->b2b_format);
+            return 0;
+        }
+        if (b2b_count>0) {
+            showmsg("error : explicit and legacy B2b raw inputs cannot be combined");
+            trace(1,"explicit and legacy B2b raw inputs cannot be combined\n");
+            return 0;
+        }
+        reppath(fopt->b2braw,b2b_resolved,ts,proc_rov,proc_base);
+        b2b_path=b2b_resolved;
+        b2b_format=format;
+        b2b_count++;
+    }
+    if (b2b_count>1) {
+        showmsg("error : multiple B2b raw inputs are not supported");
+        trace(1,"multiple B2b raw inputs are not supported\n");
+        return 0;
+    }
+    if (b2b_count>0&&popt_.mode!=PMODE_SINGLE&&popt_.soltype!=0) {
+        showmsg("error : B2b replay supports forward processing only");
+        trace(1,"B2b replay rejected for soltype=%d\n",popt_.soltype);
+        return 0;
+    }
     
     /* open debug trace */
     if (flag&&sopt->trace>0) {
         if (*outfile) {
-            strcpy(tracefile,outfile);
-            strcat(tracefile,".trace");
+            strcpy(tracefile,outfile);  //将输出文件名复制到tracefile中
+            strcat(tracefile,".trace"); //在tracefile后面添加.trace扩展名
         }
         else {
-            strcpy(tracefile,fopt->trace);
+            strcpy(tracefile,fopt->trace);  //如果输出文件名为空将文件选项中的trace路径复制到tracefile中
         }
-        traceclose();
-        traceopen(tracefile);
+       /* traceclose();
+        traceopen(tracefile);这里的配置文件打开太晚了，我调节到读取天线文件就进行了对应的打开日志的操作。*/
         tracelevel(sopt->trace);
     }
     /* read ionosphere data file *///做ppp需要用到的，在-o文件里面
@@ -986,22 +1318,34 @@ static int execses(gtime_t ts, gtime_t te, double ti, const prcopt_t *popt,
     }
     /* write header to output file */
     //写入输出头
-    if (flag&&!outhead(outfile,infile,n,&popt_,sopt)) {
+    if (flag&&!outhead(outfile,infile,n,b2b_path,b2b_format,&popt_,sopt)) {
         freeobsnav(&obss,&navs);
         return 0;
+    }
+    if (b2b_path) {
+        if (!(b2b=(b2b_replay_t *)calloc(1,sizeof(*b2b)))||
+            !b2b_replay_open(b2b,b2b_path,b2b_format)) {
+            showmsg("error : open B2b raw file %s",b2b_path);
+            trace(1,"B2b raw file open error: %s\n",b2b_path);
+            if (b2b) free(b2b);
+            freeobsnav(&obss,&navs);
+            return 0;
+        }
+        memset(navs.B2bssr,0,sizeof(navs.B2bssr));
+        trace(2,"B2b raw file open: %s format=%d\n",b2b_path,b2b_format);
     }
     iobsu=iobsr=isbs=revs=aborts=0;
     
     if (popt_.mode==PMODE_SINGLE||popt_.soltype==0) {//当spp或前向滤波时-
         if ((fp=openfile(outfile))) {
-            procpos(fp,&popt_,sopt,0); /* forward */
+            procpos(fp,&popt_,sopt,0,b2b); /* forward */
             fclose(fp);
         }
     }
     else if (popt_.soltype==1) {
         if ((fp=openfile(outfile))) {
             revs=1; iobsu=iobsr=obss.n-1; isbs=sbss.n-1;
-            procpos(fp,&popt_,sopt,0); /* backward */
+            procpos(fp,&popt_,sopt,0,b2b); /* backward */
             fclose(fp);
         }
     }
@@ -1013,9 +1357,9 @@ static int execses(gtime_t ts, gtime_t te, double ti, const prcopt_t *popt,
         
         if (solf&&solb) {
             isolf=isolb=0;
-            procpos(NULL,&popt_,sopt,1); /* forward */
+            procpos(NULL,&popt_,sopt,1,b2b); /* forward */
             revs=1; iobsu=iobsr=obss.n-1; isbs=sbss.n-1;
-            procpos(NULL,&popt_,sopt,1); /* backward */
+            procpos(NULL,&popt_,sopt,1,b2b); /* backward */
             
             /* combine forward/backward solutions */
             if (!aborts&&(fp=openfile(outfile))) {
@@ -1028,6 +1372,10 @@ static int execses(gtime_t ts, gtime_t te, double ti, const prcopt_t *popt,
         free(solb);
         free(rbf);
         free(rbb);
+    }
+    if (b2b) {
+        b2b_replay_close(b2b);
+        free(b2b);
     }
     /* free obs and nav data */
     freeobsnav(&obss,&navs);
@@ -1159,7 +1507,8 @@ static int execses_b(gtime_t ts, gtime_t te, double ti, const prcopt_t *popt,
 *          char   *base     I   base station id list (separated by " ")
 * return : status (0:ok,0>:error,1:aborted)
 * notes  : input files should contain observation data, navigation data, precise 
-*          ephemeris/clock (optional), sbas log file (optional), ssr message
+*          ephemeris/clock (optional), sbas log file (optional), 
+message
 *          log file (optional) and tec grid file (optional). only the first 
 *          observation data file in the input files is recognized as the rover
 *          data.
@@ -1204,7 +1553,18 @@ extern int postpos(gtime_t ts, gtime_t te, double ti, double tu,
     double tunit,tss;
     int i,j,k,nf,stat=0,week,flag=1,index[MAXINFILE]={0};
     char *ifile[MAXINFILE],ofile[1024],*ext;
-    
+    if (sopt->trace > 0) {
+        char tracefile[1024];
+        if (*outfile) {
+            strcpy(tracefile, outfile);
+            strcat(tracefile, ".trace");
+        }
+        else {
+            strcpy(tracefile, fopt->trace);
+        }
+        traceopen(tracefile);
+        tracelevel(sopt->trace);
+    }
     trace(3,"postpos : ti=%.0f tu=%.0f n=%d outfile=%s\n",ti,tu,n,outfile);
     
     /* open processing session */ //开始处理,文件读取，赋值navs、pcvs、pcvsrv
@@ -1308,3 +1668,4 @@ extern int postpos(gtime_t ts, gtime_t te, double ti, double tu,
     
     return stat;
 }
+#endif /* B2B_REPLAY_TEST_ONLY */

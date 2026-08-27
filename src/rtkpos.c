@@ -409,9 +409,9 @@ static double baseline(const double *ru, const double *rb, double *dr)
 static void initx(rtk_t *rtk, double xi, double var, int i)
 {
     int j;
-    rtk->x[i]=xi;
-    for (j=0;j<rtk->nx;j++) {
-        rtk->P[i+j*rtk->nx]=rtk->P[j+i*rtk->nx]=i==j?var:0.0;
+    rtk->x[i]=xi;//预测x，
+    for (j=0;j<rtk->nx;j++) {//协方差矩阵对角线赋值
+        rtk->P[i+j*rtk->nx]=rtk->P[j+i*rtk->nx]=i==j?var:0.0;//协方差矩阵对角线赋值，其余赋0
     }
 }
 /* select common satellites between rover and reference station --------------*/

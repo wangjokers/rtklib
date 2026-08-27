@@ -361,3 +361,76 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+# Local environments and temporary trees
+.venv/
+tmp/
+.tmp*/
+
+# Native/CMake build trees and products
+[Bb]uild/
+[Dd]ist/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+*.o
+*.a
+*.so
+*.dll
+*.d
+
+# Local GNSS/reference/field data. Audited 2026-08-26: data/ contains about
+# 10.86 GiB of receiver captures, precise products, and experiment outputs.
+# Small deterministic fixtures belong under app/test_b2b_decoder/fixtures/.
+data/
+data01/
+data02/
+data03_fuxian/
+data04_text/
+*.krec
+*.[Bb]2b[Bb]in
+*.[Bb][Rr][Bb]
+*.bin
+*.[Oo][Bb][Ss]
+*.[Nn][Aa][Vv]
+*.rnx
+*.[Ss][Pp]3
+*.[Cc][Ll][Kk]
+*.[Ss][Nn][Xx]
+*.[Bb][Ss][Xx]
+*.[0-9][0-9][oOnNpP]
+
+# Test, experiment, and field-run outputs
+pppb2b_validation_outputs/
+*_outputs/
+*.pos
+*.trace
+*.log
+*.err
+*.out
+app/test_b2b_decoder/*_out.txt
+app/test_b2b_decoder/stage*_decoder_out.txt
+
+# IDE/build output
+.vs/
+.vscode/
+x64/
+
+# Local native test executables
+*.exe
+app/test_b2b_decoder/test_b2b_decoder
+app/test_b2b_decoder/test_sino_receiver
+app/test_b2b_decoder/test_unicore_receiver
+app/test_b2b_decoder/test_b2b_replay
+app/test_b2b_decoder/test_b2b_rinex4_cnv1_diag
+app/test_b2b_decoder/test_b2b_cbias
+app/test_b2b_decoder/test_b2b_options
+app/test_b2b_decoder/test_b2b_product_eval
+app/test_b2b_decoder/test_b2b_product_eval_unit
+
+# Explicit small fixtures remain eligible for version control even if their
+# extensions match the broad data rules above.
+!app/test_b2b_decoder/fixtures/
+!app/test_b2b_decoder/fixtures/**
+
