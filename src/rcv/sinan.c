@@ -1,10 +1,10 @@
 /*------------------------------------------------------------------------------
 * sinan.c : minimal SinoGNSS PPP-B2b receiver decoder
 *
-* This receiver layer accepts SinoGNSS/K803 AA 44 12 binary frames and writes
-* decoded PPP-B2b products to raw->nav.B2bssr[sat]. It deliberately stops at
-* raw_t: main-nav replay, realtime-server updates and PPP use belong to later
-* stages.
+ * This receiver layer accepts SinoGNSS/K803 AA 44 12 binary frames, writes
+ * decoded PPP-B2b products to raw->nav.B2bssr[sat], and stores message 72
+ * BDS-3 ephemerides in raw->nav.eph[sat-1]. Main-nav PPP-B2b publication and
+ * PPP use belong to later stages.
 *-----------------------------------------------------------------------------*/
 #include "../rtklib.h"
 
@@ -13,6 +13,8 @@
 #define SINO_SYNC3       0x12
 #define SINO_HEADER_LEN  28
 #define SINO_MSG_B2B     1697
+#define SINO_MSG_BD3EPH  72
+#define SINO_BD3EPH_LEN  216
 
 #define B2B_CODE_MODE_COUNT 15
 #define SINO_CTX_MAGIC      0x53423242u
@@ -58,6 +60,23 @@ static uint32_t get_u4(const uint8_t *p)
 {
     return (uint32_t)p[0]|((uint32_t)p[1]<<8)|
            ((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);
+}
+
+static uint64_t get_u8(const uint8_t *p)
+{
+    return (uint64_t)p[0]|((uint64_t)p[1]<<8)|
+           ((uint64_t)p[2]<<16)|((uint64_t)p[3]<<24)|
+           ((uint64_t)p[4]<<32)|((uint64_t)p[5]<<40)|
+           ((uint64_t)p[6]<<48)|((uint64_t)p[7]<<56);
+}
+
+static double get_r8(const uint8_t *p)
+{
+    uint64_t bits=get_u8(p);
+    double value;
+
+    memcpy(&value,&bits,sizeof(value));
+    return value;
 }
 
 static sino_b2b_ctx_t *get_context(const raw_t *raw)
@@ -479,7 +498,102 @@ static int decode_b2b(raw_t *raw)
     return 0; /* Type 63 and other pages do not publish B2b products. */
 }
 
-/* Validate a complete Sino frame and dispatch receiver message 1697. */
+/* Decode SinoGNSS message 72 (BD3EPHEM) using the documented little-endian
+ * 216-byte payload. Toe/Toc and payload week are BDT; the frame header time is
+ * GPS week/TOW and remains the reception/transmission time. */
+static int decode_bd3eph(raw_t *raw)
+{
+    const uint8_t *p;
+    eph_t eph={0};
+    double ref_A;
+    uint32_t toe,toc;
+    int gps_week,prn,sat,sat_type,week;
+
+    if (!raw||!raw->nav.eph||
+        raw->len!=SINO_HEADER_LEN+SINO_BD3EPH_LEN) return -1;
+    p=raw->buff+SINO_HEADER_LEN;
+
+    prn=p[0];
+    sat_type=p[2];
+    week=(int)get_u2(p+12);
+    toe=get_u4(p+16);
+    toc=get_u4(p+20);
+
+    /* Valid=1, DIF/SIF/AIF=0 and source=B1C/B2a are the usable-message
+     * contract documented for BD3EPHEM. */
+    if (p[1]!=1||p[7]!=0||p[8]!=0||p[9]!=0||
+        (p[10]!=1&&p[10]!=2)||week<=0||toe>=604800||toc>=604800) {
+        return 0;
+    }
+    if (!(sat=satno(SYS_CMP,prn))) return 0;
+    if      (sat_type==1) ref_A=42162200.0; /* GEO */
+    else if (sat_type==2) ref_A=42162200.0; /* IGSO */
+    else if (sat_type==3) ref_A=27906100.0; /* MEO */
+    else return 0;
+
+    (void)time2gpst(raw->time,&gps_week);
+    if (abs(gps_week-(week+1356))>1) return 0;
+
+    eph.sat=sat;
+    eph.svh=p[3];
+    eph.sva=p[4];
+    eph.iode=p[5];
+    eph.iodc=p[6];
+    eph.week=week;
+    eph.code=EPHCODE_BDS_CNV1;
+    eph.flag=sat_type==1?2:1; /* eph_t BDS nav type: GEO or IGSO/MEO */
+    eph.toes=(double)toe;
+    eph.toe=bdt2gpst(bdt2time(week,(double)toe));
+    eph.toc=bdt2gpst(bdt2time(week,(double)toc));
+    eph.ttr=raw->time;
+
+    eph.A   =ref_A+get_r8(p+ 24);
+    eph.Adot=       get_r8(p+ 32);
+    eph.deln=       get_r8(p+ 40);
+    eph.ndot=       get_r8(p+ 48);
+    eph.M0  =       get_r8(p+ 56);
+    eph.e   =       get_r8(p+ 64);
+    eph.omg =       get_r8(p+ 72);
+    eph.OMG0=       get_r8(p+ 80);
+    eph.i0  =       get_r8(p+ 88);
+    eph.OMGd=       get_r8(p+ 96);
+    eph.idot=       get_r8(p+104);
+    eph.cuc =       get_r8(p+112);
+    eph.cus =       get_r8(p+120);
+    eph.crc =       get_r8(p+128);
+    eph.crs =       get_r8(p+136);
+    eph.cic =       get_r8(p+144);
+    eph.cis =       get_r8(p+152);
+    eph.f0  =       get_r8(p+160);
+    eph.f1  =       get_r8(p+168);
+    eph.f2  =       get_r8(p+176);
+    eph.tgd[2]=     get_r8(p+184); /* TGD B1Cp */
+    eph.tgd[3]=     get_r8(p+192); /* TGD B2ap */
+    eph.tgd[4]=     get_r8(p+200); /* ISC B1Cd */
+    eph.tgd[1]=     get_r8(p+208); /* TGD B2bI */
+
+    if (!isfinite(eph.A)||eph.A<=0.0||!isfinite(eph.Adot)||
+        !isfinite(eph.deln)||!isfinite(eph.ndot)||!isfinite(eph.M0)||
+        !isfinite(eph.e)||eph.e<0.0||eph.e>=1.0||
+        !isfinite(eph.omg)||!isfinite(eph.OMG0)||!isfinite(eph.i0)||
+        !isfinite(eph.OMGd)||!isfinite(eph.idot)||
+        !isfinite(eph.cuc)||!isfinite(eph.cus)||!isfinite(eph.crc)||
+        !isfinite(eph.crs)||!isfinite(eph.cic)||!isfinite(eph.cis)||
+        !isfinite(eph.f0)||!isfinite(eph.f1)||!isfinite(eph.f2)||
+        !isfinite(eph.tgd[1])||isinf(eph.tgd[2])||
+        !isfinite(eph.tgd[3])||!isfinite(eph.tgd[4])) return -1;
+
+    if (!strstr(raw->opt,"-EPHALL")&&
+        fabs(timediff(raw->nav.eph[sat-1].toe,eph.toe))<1E-9&&
+        fabs(timediff(raw->nav.eph[sat-1].toc,eph.toc))<1E-9) return 0;
+
+    raw->nav.eph[sat-1]=eph;
+    raw->ephsat=sat;
+    raw->ephset=0;
+    return 2;
+}
+
+/* Validate a complete Sino frame and dispatch supported receiver messages. */
 static int decode_sino(raw_t *raw)
 {
     int type,week;
@@ -503,7 +617,9 @@ static int decode_sino(raw_t *raw)
     if (raw->outtype) {
         sprintf(raw->msgtype,"SINO %4d (%4d)",type,raw->len);
     }
-    return type==SINO_MSG_B2B?decode_b2b(raw):0;
+    if (type==SINO_MSG_B2B) return decode_b2b(raw);
+    if (type==SINO_MSG_BD3EPH) return decode_bd3eph(raw);
+    return 0;
 }
 
 /* Allocate the per-PRN6 MASK context owned exclusively by this Sino raw_t. */

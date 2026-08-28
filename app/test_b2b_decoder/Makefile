@@ -20,6 +20,7 @@ REPLAY_TARGET := test_b2b_replay$(EXEEXT)
 STAGE4E_DIAG_TARGET := test_b2b_rinex4_cnv1_diag$(EXEEXT)
 CBIAS_TARGET := test_b2b_cbias$(EXEEXT)
 OPTIONS_TARGET := test_b2b_options$(EXEEXT)
+SINO_MESSAGE72_TARGET := ../../build/realtime-fixture/test_sino_message72$(EXEEXT)
 RTKSVR_REPLAY_TARGET := ../../build/realtime-fixture/test_rtksvr_file_replay$(EXEEXT)
 RTKSVR_REPLAY_LDLIBS := $(LDLIBS)
 ifeq ($(OS),Windows_NT)
@@ -57,7 +58,7 @@ SRCS := test_b2b_decoder.c b2b_decoder.c
 endif
 
 .PHONY: all sino-receiver unicore-receiver replay stage4e-diag cbias options \
-	fixture-test realtime-replay
+	message72 fixture-test realtime-replay
 
 all: $(TARGET)
 
@@ -72,6 +73,8 @@ stage4e-diag: $(STAGE4E_DIAG_TARGET)
 cbias: $(CBIAS_TARGET)
 
 options: $(OPTIONS_TARGET)
+
+message72: $(SINO_MESSAGE72_TARGET)
 
 fixture-test:
 	$(PYTHON) -m unittest -v test_extract_krec_fixture.py
@@ -103,6 +106,11 @@ $(CBIAS_TARGET): $(CBIAS_SRCS)
 $(OPTIONS_TARGET): $(OPTIONS_SRCS)
 	$(CC) $(CFLAGS) -DB2B_REPLAY_TEST_ONLY -ffunction-sections \
 		-fdata-sections -o $@ $(OPTIONS_SRCS) -Wl,--gc-sections $(LDLIBS)
+
+$(SINO_MESSAGE72_TARGET): test_sino_message72.c $(RECEIVER_COMMON_SRCS)
+	mkdir -p ../../build/realtime-fixture
+	$(CC) $(CFLAGS) -I../../src/rcv -o $@ test_sino_message72.c \
+		$(RECEIVER_COMMON_SRCS) $(LDLIBS)
 
 $(RTKSVR_REPLAY_TARGET): $(RTKSVR_REPLAY_SRCS)
 	mkdir -p ../../build/realtime-fixture
