@@ -163,11 +163,15 @@ static double prange(const obsd_t *obs, const nav_t *nav, const prcopt_t *opt,
             return (P2-gamma*P1)/(1.0-gamma);
         }
         else if (sys==SYS_CMP) { /* B1-B2 */
-            gamma=SQR(((obs->code[0]==CODE_L2I)?FREQ1_CMP:FREQ1)/FREQ2_CMP);
+            double f1=sat2freq(sat,obs->code[0],nav);
+            double f2=sat2freq(sat,obs->code[1],nav);
+            if (f1==0.0||f2==0.0) return 0.0;
+            gamma=SQR(f1/f2);
             if      (obs->code[0]==CODE_L2I) b1=gettgd(obs->time,sat,nav,0); /* TGD_B1I*/
             else if (obs->code[0]==CODE_L1P) b1=gettgd(obs->time,sat,nav,2); /* TGD_B1Cp */
             else b1=gettgd(obs->time,sat,nav,2)+gettgd(obs->time,sat,nav,4); /* TGD_B1Cp+ISC_B1Cd */
             b2=gettgd(obs->time,sat,nav,1); /* TGD_B2I/B2bI (m) *///B2对应的TGD
+            if (obs->code[1]==CODE_L5P) b2=gettgd(obs->time,sat,nav,3);
             return ((P2-gamma*P1)-(b2-gamma*b1))/(1.0-gamma);//完整的TGD修正双频伪距组合
         }
         else if (sys==SYS_IRN) { /* L5-S */
@@ -208,6 +212,14 @@ static double prange(const obsd_t *obs, const nav_t *nav, const prcopt_t *opt,
     }
     return P1;//默认返回未修正的P1
 }
+
+#ifdef B2B_PNTPOS_TEST
+extern double b2b_test_prange(const obsd_t *obs, const nav_t *nav,
+                              const prcopt_t *opt, double *var)
+{
+    return prange(obs,nav,opt,var);
+}
+#endif
 
 
 /*自行增加的支持多频点伪距码偏差修正*/
