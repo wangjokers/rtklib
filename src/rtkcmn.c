@@ -266,7 +266,7 @@ static char codepris[7][MAXFREQ][16]={  /* code priority for each freq-index */
     {"CABXZ"   ,"IQX"       ,"IQX"     ,"ABCXZ"  ,"IQX"    ,""      ,""}, /* GAL */
     {"CLSXZ"   ,"LSX"       ,"IQXDPZ"  ,"LSXEZ"  ,""       ,""      ,""}, /* QZS */
     {"C"       ,"IQX"       ,""        ,""       ,""       ,""      ,""}, /* SBS */
-    {"IQXDPAN" ,"IQXDPZ"    ,"DPX"     ,"IQXA"   ,"DPX"    ,""      ,""}, /* BDS */
+    {"PIQXDAN" ,"PIQXDZ"    ,"DPX"     ,"IQXA"   ,"DPX"    ,""      ,""}, /* BDS */
     {"ABCX"    ,"ABCX"      ,""        ,""       ,""       ,""      ,""}  /* IRN */
 };
 static fatalfunc_t *fatalfunc=NULL; /* fatal callback function */
@@ -668,10 +668,10 @@ static int code2freq_BDS(uint8_t code, double *freq)
     char *obs=code2obs(code);//又索引确定观测值的类型
     
     switch (obs[0]) {//此处的返回值并非去区分不同的信号，是用于排优先级
-        case '1': *freq=FREQ1;     return 5; /* B1C */
+        case '1': *freq=FREQ1;     return 0; /* B1C */
         case '2': *freq=FREQ1_CMP; return 0; /* B1I */
         case '7': *freq=FREQ2_CMP; return 2; /* B2I/B2b */
-        case '5': *freq=FREQ5;     return 3; /* B2a */
+        case '5': *freq=FREQ5;     return 1; /* B2a */
         case '6': *freq=FREQ3_CMP; return 1; /* B3 */
         case '8': *freq=FREQ8;     return 4; /* B2ab */
         //只用2和6两个频点

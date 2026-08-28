@@ -424,9 +424,10 @@ int main(int argc, char **argv)
     long writesol_calls,pos_bytes,trace_bytes;
     int completed=0,pass=0;
 
-    if (argc!=8) {
+    if (argc!=8&&argc!=9) {
         fprintf(stderr,
-            "usage: %s OBS SINO POS TRACE SUMMARY SPEED TIMEOUT_SECONDS\n",
+            "usage: %s OBS SINO POS TRACE SUMMARY SPEED TIMEOUT_SECONDS "
+            "[PROCESSING_CONFIG]\n",
             argv[0]);
         return 2;
     }
@@ -448,9 +449,20 @@ int main(int argc, char **argv)
     paths[0]=obs_path; paths[1]=sino_path; paths[2]=empty; paths[3]=argv[3];
     paths[4]=empty; paths[5]=empty; paths[6]=empty; paths[7]=empty;
 
-    prcopt.mode=PMODE_SINGLE;
-    prcopt.navsys=SYS_GPS|SYS_GLO|SYS_GAL|SYS_QZS|SYS_CMP|SYS_IRN;
-    solopt[0].outhead=1;
+    if (argc==9) {
+        resetsysopts();
+        if (!loadopts(argv[8],sysopts)) {
+            fprintf(stderr,"processing config load failed: %s\n",argv[8]);
+            return 2;
+        }
+        getsysopts(&prcopt,solopt,NULL);
+        solopt[1]=solopt[0];
+    }
+    else {
+        prcopt.mode=PMODE_SINGLE;
+        prcopt.navsys=SYS_GPS|SYS_GLO|SYS_GAL|SYS_QZS|SYS_CMP|SYS_IRN;
+        solopt[0].outhead=1;
+    }
 
     traceopen(argv[4]);
     tracelevel(4);

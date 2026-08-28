@@ -22,6 +22,7 @@ CBIAS_TARGET := test_b2b_cbias$(EXEEXT)
 OPTIONS_TARGET := test_b2b_options$(EXEEXT)
 SINO_MESSAGE72_TARGET := ../../build/realtime-fixture/test_sino_message72$(EXEEXT)
 RTKSVR_REPLAY_TARGET := ../../build/realtime-fixture/test_rtksvr_file_replay$(EXEEXT)
+PHASE2A_TARGET := ../../build/realtime-fixture/test_rtcm1127_pcode$(EXEEXT)
 RTKSVR_REPLAY_LDLIBS := $(LDLIBS)
 ifeq ($(OS),Windows_NT)
 RTKSVR_REPLAY_LDLIBS += -lws2_32
@@ -58,7 +59,7 @@ SRCS := test_b2b_decoder.c b2b_decoder.c
 endif
 
 .PHONY: all sino-receiver unicore-receiver replay stage4e-diag cbias options \
-	message72 fixture-test realtime-replay
+	message72 fixture-test realtime-replay phase2a-realtime
 
 all: $(TARGET)
 
@@ -80,6 +81,8 @@ fixture-test:
 	$(PYTHON) -m unittest -v test_extract_krec_fixture.py
 
 realtime-replay: $(RTKSVR_REPLAY_TARGET)
+
+phase2a-realtime: $(PHASE2A_TARGET)
 
 $(TARGET): $(SRCS) b2b_decoder.h
 	$(CC) $(CFLAGS) -o $@ $(SRCS) $(LDLIBS)
@@ -116,4 +119,10 @@ $(RTKSVR_REPLAY_TARGET): $(RTKSVR_REPLAY_SRCS)
 	mkdir -p ../../build/realtime-fixture
 	$(CC) $(CFLAGS) -DTRACE -DB2B_RTKSVR_TEST -pthread -o $@ \
 		$(RTKSVR_REPLAY_SRCS) \
+		$(RTKSVR_REPLAY_LDLIBS) -pthread
+
+$(PHASE2A_TARGET): test_rtcm1127_pcode.c $(RTKSVR_REPLAY_SRCS)
+	mkdir -p ../../build/realtime-fixture
+	$(CC) $(CFLAGS) -DTRACE -pthread -o $@ test_rtcm1127_pcode.c \
+		$(filter-out test_rtksvr_file_replay.c,$(RTKSVR_REPLAY_SRCS)) \
 		$(RTKSVR_REPLAY_LDLIBS) -pthread
