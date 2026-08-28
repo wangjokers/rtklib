@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Minimal Linux build probe for the current target snapshot. This builds the
-# RTKLIB core (including rtksvr, Sino, RTCM3, and PPP-B2b sources) as a static
-# library and links the post-processing rnx2rtkp entry. The repository does not
-# currently contain an rtkrcv/rtppp realtime application entry.
+# Minimal Linux build for the current target snapshot. This builds the RTKLIB
+# core (including rtksvr, Sino, RTCM3, and PPP-B2b sources) as a static library
+# and links both the post-processing and realtime file-stream entries.
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/.." && pwd)"
@@ -82,9 +81,15 @@ done
     "${build_dir}/librtklib_b2b.a" \
     -lm -pthread -o "${build_dir}/rnx2rtkp"
 
+"${cc}" "${common_flags[@]}" \
+    "${repo_root}/app/rtppp/rtppp.c" \
+    "${build_dir}/librtklib_b2b.a" \
+    -lm -pthread -o "${build_dir}/rtppp"
+
 "${build_dir}/rnx2rtkp" -? >/dev/null 2>&1
+"${build_dir}/rtppp" --help >/dev/null
 
 printf 'Linux build probe passed.\n'
 printf 'Core library: %s\n' "${build_dir}/librtklib_b2b.a"
 printf 'Post-process executable: %s\n' "${build_dir}/rnx2rtkp"
-printf 'Realtime executable: unavailable (rtkrcv/rtppp entry is absent).\n'
+printf 'Realtime executable: %s\n' "${build_dir}/rtppp"
