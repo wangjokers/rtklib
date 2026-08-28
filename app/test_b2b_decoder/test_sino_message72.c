@@ -11,6 +11,17 @@
 #define SINO_MSG_BD3EPH       72
 #define SINO_MSG_B2B        1697
 #define SINO_TYPE_POS (SINO_HEADER_LEN*8+44)
+#define SINO_P2_34 5.820766091346740E-11
+
+static const int sample_prns[]={23,31,41};
+static const double sample_mn_tgd[][4]={
+    { 2.299202606082E-08,-2.270098775625E-09,
+     -9.313225746155E-10,-2.735760062933E-09},
+    {-1.571606844664E-09,-5.180481821299E-09,
+     -2.328306436539E-10,-2.561137080193E-09},
+    {-2.008164301515E-08, 5.820766091347E-09,
+     -1.746229827404E-10,-2.735760062933E-09}
+};
 
 typedef struct {
     long frames;
@@ -28,6 +39,9 @@ typedef struct {
     long field_errors;
     long time_backwards;
     long b1cp_tgd_missing;
+    long finite_message72;
+    long layout_errors;
+    long mn_sample_matches;
     int prn_count;
     int observed_prn_count;
     int iod_match_prns;
@@ -35,6 +49,7 @@ typedef struct {
     uint8_t seen_prn[MAXPRNCMP+1];
     uint8_t seen_eph_iod[MAXPRNCMP+1][256];
     uint8_t seen_b2b_iod[MAXPRNCMP+1][1024];
+    double sample_tgd[3][4];
 } decode_stats_t;
 
 extern const B2bssr_t *sino_b2b_source_product(const raw_t *raw, int prn6,
@@ -49,6 +64,38 @@ static uint32_t get_u4le(const uint8_t *p)
 {
     return (uint32_t)p[0]|((uint32_t)p[1]<<8)|
            ((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);
+}
+
+static int32_t get_i4le(const uint8_t *p)
+{
+    return (int32_t)get_u4le(p);
+}
+
+static uint64_t get_u8le(const uint8_t *p)
+{
+    return (uint64_t)p[0]|((uint64_t)p[1]<<8)|
+           ((uint64_t)p[2]<<16)|((uint64_t)p[3]<<24)|
+           ((uint64_t)p[4]<<32)|((uint64_t)p[5]<<40)|
+           ((uint64_t)p[6]<<48)|((uint64_t)p[7]<<56);
+}
+
+static double get_r8le(const uint8_t *p)
+{
+    uint64_t bits=get_u8le(p);
+    double value;
+
+    memcpy(&value,&bits,sizeof(value));
+    return value;
+}
+
+static int sample_index(int prn)
+{
+    int i;
+
+    for (i=0;i<(int)(sizeof(sample_prns)/sizeof(sample_prns[0]));i++) {
+        if (prn==sample_prns[i]) return i;
+    }
+    return -1;
 }
 
 static int scan_frames(const char *path, frame_stats_t *stats)
@@ -131,8 +178,9 @@ static int valid_message72_eph(const raw_t *raw, int sat, int prn)
            eph->iode>=0&&eph->iode<=255&&eph->iodc>=0&&eph->iodc<=255&&
            eph->svh==0&&eph->A>2.0E7&&eph->A<5.0E7&&
            eph->e>=0.0&&eph->e<1.0&&isfinite(eph->Adot)&&
-           isfinite(eph->ndot)&&!isinf(eph->tgd[2])&&
-           isfinite(eph->tgd[3])&&isfinite(eph->tgd[4])&&
+           isfinite(eph->ndot)&&isfinite(eph->tgd[1])&&
+           isfinite(eph->tgd[2])&&isfinite(eph->tgd[3])&&
+           isfinite(eph->tgd[4])&&isfinite(eph->tgd[5])&&
            prn>=MINPRNCMP&&prn<=MAXPRNCMP;
 }
 
@@ -143,7 +191,7 @@ static int replay_decoder(const char *path, decode_stats_t *stats)
     eph_t *before=NULL;
     FILE *fp=NULL;
     gtime_t last72={0};
-    int i,ret,sat,prn,ok=0;
+    int i,j,ret,sat,prn,ok=0;
 
     if (!stats||(raw=(raw_t *)calloc(1,sizeof(*raw)))==NULL||
         (before=(eph_t *)malloc(sizeof(eph_t)*MAXSAT*2))==NULL||
@@ -184,8 +232,33 @@ static int replay_decoder(const char *path, decode_stats_t *stats)
             }
         }
         if (!valid_message72_eph(raw,sat,prn)) stats->field_errors++;
-        if (isnan(raw->nav.eph[sat-1].tgd[2])) {
+        if (!isfinite(raw->nav.eph[sat-1].tgd[2])) {
             stats->b1cp_tgd_missing++;
+        }
+        else stats->finite_message72++;
+        {
+            const uint8_t *p=raw->buff+SINO_HEADER_LEN;
+            const eph_t *eph=raw->nav.eph+sat-1;
+
+            if (fabs(eph->tgd[4]-get_i4le(p+184)*SINO_P2_34)>1E-20||
+                fabs(eph->tgd[5]-get_i4le(p+188)*SINO_P2_34)>1E-20||
+                fabs(eph->tgd[2]-get_r8le(p+192))>1E-20||
+                fabs(eph->tgd[3]-get_r8le(p+200))>1E-20||
+                fabs(eph->tgd[1]-get_r8le(p+208))>1E-20) {
+                stats->layout_errors++;
+            }
+            if ((j=sample_index(prn))>=0) {
+                stats->sample_tgd[j][0]=eph->tgd[2];
+                stats->sample_tgd[j][1]=eph->tgd[3];
+                stats->sample_tgd[j][2]=eph->tgd[4];
+                stats->sample_tgd[j][3]=eph->tgd[5];
+                if (fabs(eph->tgd[2]-sample_mn_tgd[j][0])<=1E-20&&
+                    fabs(eph->tgd[3]-sample_mn_tgd[j][1])<=1E-20&&
+                    fabs(eph->tgd[4]-sample_mn_tgd[j][2])<=1E-20&&
+                    fabs(eph->tgd[5]-sample_mn_tgd[j][3])<=1E-20) {
+                    stats->mn_sample_matches++;
+                }
+            }
         }
         stats->seen_prn[prn]=1;
         stats->seen_eph_iod[prn][raw->nav.eph[sat-1].iodc]=1;
@@ -237,18 +310,23 @@ int main(int argc, char **argv)
          decoded.ret20_type2==40&&decoded.decode_errors==0&&
          decoded.wrong_sat_writes==0&&decoded.field_errors==0&&
          decoded.time_backwards==0&&decoded.prn_count==29&&
-         decoded.observed_prn_count==9&&decoded.iod_match_pairs>0;
+         decoded.observed_prn_count==9&&decoded.iod_match_pairs>0&&
+         decoded.finite_message72==580&&decoded.b1cp_tgd_missing==0&&
+         decoded.layout_errors==0&&decoded.mn_sample_matches==60;
 
     printf("SINO_MESSAGE72_TEST %s\n",pass?"PASS":"FAIL");
     printf("frames=%ld message72=%ld message1697=%ld crc_errors=%ld "
            "length_errors=%ld\n",frames.frames,frames.message72,
            frames.message1697,frames.crc_errors,frames.length_errors);
     printf("ret2=%ld type2=%ld decode_errors=%ld wrong_sat_writes=%ld "
-           "field_errors=%ld time_backwards=%ld b1cp_tgd_missing=%ld\n",
+           "field_errors=%ld time_backwards=%ld b1cp_tgd_missing=%ld "
+           "finite_message72=%ld layout_errors=%ld mn_sample_matches=%ld\n",
            decoded.ret2,
            decoded.ret20_type2,decoded.decode_errors,
            decoded.wrong_sat_writes,decoded.field_errors,
-           decoded.time_backwards,decoded.b1cp_tgd_missing);
+           decoded.time_backwards,decoded.b1cp_tgd_missing,
+           decoded.finite_message72,decoded.layout_errors,
+           decoded.mn_sample_matches);
     printf("eph_prns=%d observed_prns=%d iod_match_prns=%d "
            "iod_match_pairs=%d\n",decoded.prn_count,
            decoded.observed_prn_count,decoded.iod_match_prns,
@@ -263,5 +341,11 @@ int main(int argc, char **argv)
         }
     }
     printf("\n");
+    for (prn=0;prn<3;prn++) {
+        printf("C%02d tgd2=%.15e tgd3=%.15e tgd4=%.15e tgd5=%.15e\n",
+               sample_prns[prn],decoded.sample_tgd[prn][0],
+               decoded.sample_tgd[prn][1],decoded.sample_tgd[prn][2],
+               decoded.sample_tgd[prn][3]);
+    }
     return pass?0:1;
 }

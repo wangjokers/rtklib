@@ -15,6 +15,7 @@
 #define SINO_MSG_B2B     1697
 #define SINO_MSG_BD3EPH  72
 #define SINO_BD3EPH_LEN  216
+#define SINO_P2_34       5.820766091346740E-11
 
 #define B2B_CODE_MODE_COUNT 15
 #define SINO_CTX_MAGIC      0x53423242u
@@ -60,6 +61,11 @@ static uint32_t get_u4(const uint8_t *p)
 {
     return (uint32_t)p[0]|((uint32_t)p[1]<<8)|
            ((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);
+}
+
+static int32_t get_i4(const uint8_t *p)
+{
+    return (int32_t)get_u4(p);
 }
 
 static uint64_t get_u8(const uint8_t *p)
@@ -507,7 +513,7 @@ static int decode_bd3eph(raw_t *raw)
     eph_t eph={0};
     double ref_A;
     uint32_t toe,toc;
-    int gps_week,prn,sat,sat_type,week;
+    int gps_week,prn,sat,sat_type,sw_version,week;
 
     if (!raw||!raw->nav.eph||
         raw->len!=SINO_HEADER_LEN+SINO_BD3EPH_LEN) return -1;
@@ -515,6 +521,7 @@ static int decode_bd3eph(raw_t *raw)
 
     prn=p[0];
     sat_type=p[2];
+    sw_version=(int)get_u2(raw->buff+26);
     week=(int)get_u2(p+12);
     toe=get_u4(p+16);
     toc=get_u4(p+20);
@@ -567,10 +574,22 @@ static int decode_bd3eph(raw_t *raw)
     eph.f0  =       get_r8(p+160);
     eph.f1  =       get_r8(p+168);
     eph.f2  =       get_r8(p+176);
-    eph.tgd[2]=     get_r8(p+184); /* TGD B1Cp */
-    eph.tgd[3]=     get_r8(p+192); /* TGD B2ap */
-    eph.tgd[4]=     get_r8(p+200); /* ISC B1Cd */
-    eph.tgd[1]=     get_r8(p+208); /* TGD B2bI */
+    if (sw_version==2) {
+        /* Receiver S/W version 2 uses two scaled int32 ISC fields before
+         * the three little-endian double TGD fields. */
+        eph.tgd[4]=(double)get_i4(p+184)*SINO_P2_34; /* ISC B1Cd */
+        eph.tgd[5]=(double)get_i4(p+188)*SINO_P2_34; /* ISC B2ad */
+        eph.tgd[2]=        get_r8(p+192);             /* TGD B1Cp */
+        eph.tgd[3]=        get_r8(p+200);             /* TGD B2ap */
+        eph.tgd[1]=        get_r8(p+208);             /* TGD B2bI */
+    }
+    else {
+        /* Preserve the documented legacy layout for unreviewed versions. */
+        eph.tgd[2]=get_r8(p+184); /* TGD B1Cp */
+        eph.tgd[3]=get_r8(p+192); /* TGD B2ap */
+        eph.tgd[4]=get_r8(p+200); /* ISC B1Cd */
+        eph.tgd[1]=get_r8(p+208); /* TGD B2bI */
+    }
 
     if (!isfinite(eph.A)||eph.A<=0.0||!isfinite(eph.Adot)||
         !isfinite(eph.deln)||!isfinite(eph.ndot)||!isfinite(eph.M0)||
@@ -580,8 +599,9 @@ static int decode_bd3eph(raw_t *raw)
         !isfinite(eph.cuc)||!isfinite(eph.cus)||!isfinite(eph.crc)||
         !isfinite(eph.crs)||!isfinite(eph.cic)||!isfinite(eph.cis)||
         !isfinite(eph.f0)||!isfinite(eph.f1)||!isfinite(eph.f2)||
-        !isfinite(eph.tgd[1])||isinf(eph.tgd[2])||
-        !isfinite(eph.tgd[3])||!isfinite(eph.tgd[4])) return -1;
+        !isfinite(eph.tgd[1])||!isfinite(eph.tgd[2])||
+        !isfinite(eph.tgd[3])||!isfinite(eph.tgd[4])||
+        !isfinite(eph.tgd[5])) return -1;
 
     if (!strstr(raw->opt,"-EPHALL")&&
         fabs(timediff(raw->nav.eph[sat-1].toe,eph.toe))<1E-9&&
