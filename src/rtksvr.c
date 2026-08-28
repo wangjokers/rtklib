@@ -314,6 +314,8 @@ static void update_b2b_ssr(rtksvr_t *svr, int index)
 {
     int n=b2b_update_nav_from_raw(&svr->nav,svr->raw+index);
 
+    tracet(4,"update_b2b_ssr: index=%d format=%d transferred=%d\n",
+           index,svr->format[index],n);
     if (n>0) svr->nmsg[index][8]++;
 }
 /* update rtk server struct --------------------------------------------------*/
@@ -345,7 +347,8 @@ static void update_svr(rtksvr_t *svr, int ret, obs_t *obs, nav_t *nav,
     else if (ret==10) { /* ssr message */
         update_ssr(svr,index);
     }
-    else if (ret==20&&svr->format[index]==STRFMT_UNICORE) {
+    else if (ret==20&&(svr->format[index]==STRFMT_UNICORE||
+                       svr->format[index]==STRFMT_SINO)) {
         /* PPP-B2b SSR message (RTCM SSR phase bias also uses return code 20) */
         update_b2b_ssr(svr,index);
     }
@@ -353,6 +356,26 @@ static void update_svr(rtksvr_t *svr, int ret, obs_t *obs, nav_t *nav,
         svr->nmsg[index][9]++;
     }
 }
+#ifdef B2B_RTKSVR_TEST
+/* Exercise the real update_svr() return-code/format gate without exposing a
+ * production API. A rejected format leaves the synthetic raw update pending. */
+extern int rtksvr_test_b2b_ret20_gate(int format, int *raw_update,
+                                      int *nav_update)
+{
+    rtksvr_t *svr=(rtksvr_t *)calloc(1,sizeof(*svr));
+    int events;
+
+    if (!svr) return -1;
+    svr->format[0]=format;
+    svr->raw[0].nav.B2bssr[1].update=1;
+    update_svr(svr,20,NULL,NULL,0,0,NULL,0,0);
+    if (raw_update) *raw_update=svr->raw[0].nav.B2bssr[1].update;
+    if (nav_update) *nav_update=svr->nav.B2bssr[1].update;
+    events=(int)svr->nmsg[0][8];
+    free(svr);
+    return events;
+}
+#endif
 /* decode receiver raw/rtcm data ---------------------------------------------*/
 static int decoderaw(rtksvr_t *svr, int index)
 {

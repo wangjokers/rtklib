@@ -114,5 +114,6 @@ $(SINO_MESSAGE72_TARGET): test_sino_message72.c $(RECEIVER_COMMON_SRCS)
 
 $(RTKSVR_REPLAY_TARGET): $(RTKSVR_REPLAY_SRCS)
 	mkdir -p ../../build/realtime-fixture
-	$(CC) $(CFLAGS) -DTRACE -pthread -o $@ $(RTKSVR_REPLAY_SRCS) \
+	$(CC) $(CFLAGS) -DTRACE -DB2B_RTKSVR_TEST -pthread -o $@ \
+		$(RTKSVR_REPLAY_SRCS) \
 		$(RTKSVR_REPLAY_LDLIBS) -pthread
