@@ -17,9 +17,16 @@ typedef struct {
     const char *config;
     const char *output;
     const char *trace;
+    const char *start_time;
     double speed;
     double timeout;
 } cli_options_t;
+
+typedef struct {
+    int stream_type;
+    char path[MAXSTRPATH];
+    long expected_bytes;
+} input_spec_t;
 
 typedef struct {
     uint32_t rtcm_frames;
@@ -67,11 +74,17 @@ static void on_signal(int sig)
 static void usage(FILE *fp, const char *program)
 {
     fprintf(fp,
-        "usage: %s --obs FILE --sino FILE --config FILE --output FILE "
+        "usage: %s --obs INPUT --sino INPUT --config FILE --output FILE "
         "[--trace FILE] [--speed N] [--timeout SECONDS]\n"
         "\n"
-        "The input files must have RTKLIB time-tag sidecars (FILE.tag).\n"
-        "--speed defaults to 1.0; --timeout 0 waits until EOF or a signal.\n",
+        "INPUT is a time-tagged file or tcpcli://HOST:PORT. Both inputs must "
+        "use the same mode.\n"
+        "Files require RTKLIB time-tag sidecars (FILE.tag). --speed applies "
+        "only to files.\n"
+        "Historical TCP replay may set GPST with --start-time "
+        "\"YYYY MM DD hh mm ss\".\n"
+        "TCP mode waits for both connected peers to disconnect; --timeout 0 "
+        "otherwise waits indefinitely.\n",
         program);
 }
 
@@ -104,6 +117,7 @@ static int parse_args(int argc, char **argv, cli_options_t *opt)
         else if (!strcmp(argv[i],"--config"))  opt->config=argv[++i];
         else if (!strcmp(argv[i],"--output"))  opt->output=argv[++i];
         else if (!strcmp(argv[i],"--trace"))   opt->trace=argv[++i];
+        else if (!strcmp(argv[i],"--start-time")) opt->start_time=argv[++i];
         else if (!strcmp(argv[i],"--speed")) {
             if (!parse_double(argv[++i],&opt->speed)||opt->speed<=0.0) {
                 return 0;
@@ -129,6 +143,27 @@ static int tagged_path(char *dst, size_t size, const char *path, double speed)
 {
     int n=snprintf(dst,size,"%s::T::x%.6f::P=4",path,speed);
     return n>0&&(size_t)n<size;
+}
+
+static int input_spec(const char *text, double speed, input_spec_t *spec)
+{
+    static const char tcpcli_prefix[]="tcpcli://";
+    int n;
+
+    memset(spec,0,sizeof(*spec));
+    if (!strncmp(text,tcpcli_prefix,sizeof(tcpcli_prefix)-1)) {
+        text+=sizeof(tcpcli_prefix)-1;
+        if (!*text) return 0;
+        n=snprintf(spec->path,sizeof(spec->path),"%s",text);
+        if (n<=0||(size_t)n>=sizeof(spec->path)) return 0;
+        spec->stream_type=STR_TCPCLI;
+        spec->expected_bytes=-1L;
+        return 1;
+    }
+    spec->stream_type=STR_FILE;
+    spec->expected_bytes=file_size(text);
+    return spec->expected_bytes>0&&
+           tagged_path(spec->path,sizeof(spec->path),text,speed);
 }
 
 static const eph_t *find_current_eph(const nav_t *nav, int sat)
@@ -208,23 +243,26 @@ static int count_solutions(const char *path, long *solutions, long *q6)
 int main(int argc, char **argv)
 {
     cli_options_t cli;
+    input_spec_t obs_input,sino_input;
     server_stats_t stats;
     rtksvr_t *svr=NULL;
     prcopt_t prcopt=prcopt_default;
     solopt_t solopt[2]={solopt_default,solopt_default};
-    int streams[8]={STR_FILE,STR_FILE,STR_NONE,STR_FILE,STR_NONE,
+    gtime_t replay_time={0};
+    int streams[8]={STR_NONE,STR_NONE,STR_NONE,STR_FILE,STR_NONE,
                     STR_NONE,STR_NONE,STR_NONE};
     int formats[3]={STRFMT_RTCM3,STRFMT_SINO,STRFMT_RTCM3};
-    char obs_path[MAXSTRPATH],sino_path[MAXSTRPATH],errmsg[1024]="";
+    char errmsg[1024]="",obs_msg[1024],sino_msg[1024];
     char empty[]="",ephall[]="-EPHALL";
     char *paths[8],*cmds[3]={NULL,NULL,NULL};
     char *periodic[3]={NULL,NULL,NULL};
     char *rcvopts[3]={empty,ephall,empty};
     double nmeapos[3]={0.0,0.0,0.0};
     uint32_t obs_read=0,sino_read=0;
-    long obs_expected,sino_expected,elapsed_ms=0,timeout_ms=0;
+    long obs_expected,sino_expected,elapsed_ms=0,timeout_ms=0,quiet_ms=0;
     long solutions=0,q6=0;
-    int arg_status,completed=0,trace_open=0,exit_status=1;
+    int arg_status,completed=0,trace_open=0,exit_status=1,tcp_mode=0;
+    int obs_started=0,sino_started=0,obs_disconnected=0,sino_disconnected=0;
 
     arg_status=parse_args(argc,argv,&cli);
     if (arg_status==1) return 0;
@@ -236,17 +274,30 @@ int main(int argc, char **argv)
         fprintf(stderr,"output must differ from both input files\n");
         return 2;
     }
-    obs_expected=file_size(cli.obs);
-    sino_expected=file_size(cli.sino);
-    if (obs_expected<=0||sino_expected<=0) {
-        fprintf(stderr,"input file stat failed\n");
+    if (!input_spec(cli.obs,cli.speed,&obs_input)||
+        !input_spec(cli.sino,cli.speed,&sino_input)) {
+        fprintf(stderr,"invalid input path or file stat failed\n");
         return 2;
     }
-    if (!tagged_path(obs_path,sizeof(obs_path),cli.obs,cli.speed)||
-        !tagged_path(sino_path,sizeof(sino_path),cli.sino,cli.speed)) {
-        fprintf(stderr,"input path is too long\n");
+    if (obs_input.stream_type!=sino_input.stream_type) {
+        fprintf(stderr,"obs and sino inputs must use the same stream mode\n");
         return 2;
     }
+    tcp_mode=obs_input.stream_type==STR_TCPCLI;
+    if (tcp_mode&&fabs(cli.speed-1.0)>1E-12) {
+        fprintf(stderr,"--speed applies only to file inputs\n");
+        return 2;
+    }
+    if (cli.start_time&&(!tcp_mode||
+        str2time(cli.start_time,0,(int)strlen(cli.start_time),&replay_time))) {
+        fprintf(stderr,"--start-time requires TCP mode and GPST "
+                       "\"YYYY MM DD hh mm ss\"\n");
+        return 2;
+    }
+    obs_expected=obs_input.expected_bytes;
+    sino_expected=sino_input.expected_bytes;
+    streams[0]=obs_input.stream_type;
+    streams[1]=sino_input.stream_type;
     if (cli.timeout>0.0) timeout_ms=(long)(cli.timeout*1000.0);
 
     resetsysopts();
@@ -257,7 +308,7 @@ int main(int argc, char **argv)
     getsysopts(&prcopt,solopt,NULL);
     solopt[1]=solopt[0];
 
-    paths[0]=obs_path; paths[1]=sino_path; paths[2]=empty;
+    paths[0]=obs_input.path; paths[1]=sino_input.path; paths[2]=empty;
     paths[3]=(char *)cli.output;
     paths[4]=empty; paths[5]=empty; paths[6]=empty; paths[7]=empty;
 
@@ -276,26 +327,54 @@ int main(int argc, char **argv)
         fprintf(stderr,"rtksvrinit failed\n");
         goto cleanup;
     }
+    if (cli.start_time) timeset(gpst2utc(replay_time));
     if (!rtksvrstart(svr,10,65536,streams,paths,formats,0,cmds,periodic,
                      rcvopts,0,0,nmeapos,&prcopt,solopt,NULL,errmsg)) {
         fprintf(stderr,"rtksvrstart failed: %s\n",errmsg);
         goto cleanup;
     }
+    if (tcp_mode) {
+        /* A completed fixture connection is terminal; do not reconnect. */
+        strsettimeout(svr->stream,0,-1);
+        strsettimeout(svr->stream+1,0,-1);
+    }
 
     while (!stop_requested) {
+        int obs_state=0,sino_state=0,buffers_empty;
+
         sleepms(20);
         elapsed_ms+=20;
         rtksvrlock(svr);
         obs_read=svr->stream[0].inb;
         sino_read=svr->stream[1].inb;
-        completed=obs_read==(uint32_t)obs_expected&&
-                  sino_read==(uint32_t)sino_expected&&
-                  svr->nb[0]==0&&svr->nb[1]==0;
+        buffers_empty=svr->nb[0]==0&&svr->nb[1]==0;
         rtksvrunlock(svr);
+        if (tcp_mode) {
+            obs_state=strstat(svr->stream,obs_msg);
+            sino_state=strstat(svr->stream+1,sino_msg);
+            /* strstat() returns 3 while a connected stream is active. */
+            if (obs_state>=2||obs_read>0) obs_started=1;
+            if (sino_state>=2||sino_read>0) sino_started=1;
+            if (obs_started&&obs_state<2&&
+                (!strcmp(obs_msg,"disconnected")||
+                 !strncmp(obs_msg,"recv error",10))) obs_disconnected=1;
+            if (sino_started&&sino_state<2&&
+                (!strcmp(sino_msg,"disconnected")||
+                 !strncmp(sino_msg,"recv error",10))) sino_disconnected=1;
+            if (obs_disconnected&&sino_disconnected&&buffers_empty) {
+                quiet_ms+=20;
+                completed=quiet_ms>=500;
+            }
+            else quiet_ms=0;
+        }
+        else {
+            completed=obs_read==(uint32_t)obs_expected&&
+                      sino_read==(uint32_t)sino_expected&&buffers_empty;
+        }
         if (completed) break;
         if (timeout_ms>0&&elapsed_ms>=timeout_ms) break;
     }
-    if (completed) sleepms(250);
+    if (completed&&!tcp_mode) sleepms(250);
 
     rtksvrlock(svr);
     obs_read=svr->stream[0].inb;
@@ -305,8 +384,16 @@ int main(int argc, char **argv)
     rtksvrstop(svr,cmds);
 
     count_solutions(cli.output,&solutions,&q6);
-    printf("rtppp: completed=%d obs_bytes=%u/%ld sino_bytes=%u/%ld\n",
-           completed,obs_read,obs_expected,sino_read,sino_expected);
+    if (tcp_mode) {
+        printf("rtppp: mode=tcp completed=%d obs_bytes=%u sino_bytes=%u "
+               "obs_disconnected=%d sino_disconnected=%d\n",completed,
+               obs_read,sino_read,obs_disconnected,sino_disconnected);
+    }
+    else {
+        printf("rtppp: mode=file completed=%d obs_bytes=%u/%ld "
+               "sino_bytes=%u/%ld\n",completed,obs_read,obs_expected,
+               sino_read,sino_expected);
+    }
     printf("rtppp: rtcm_frames=%u obs_epochs=%u sino_eph=%u b2b_events=%u "
            "eph_sats=%d orbit_sats=%d clock_sats=%d cbias_sats=%d "
            "index0_unused=%d\n",stats.rtcm_frames,stats.obs_epochs,
