@@ -52,6 +52,18 @@ class ReplayPlan:
     stats: dict[str, object]
 
 
+@dataclass(frozen=True)
+class RoutedValue:
+    """Validated outputs selected from exactly one Kafka Record Value."""
+
+    item_count: int
+    dtype_counts: collections.Counter[int]
+    rtcm_frames: int
+    message_72: int
+    message_1697: int
+    outputs: tuple[tuple[str, bytes], ...]
+
+
 def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest().upper()
 
@@ -59,6 +71,52 @@ def sha256_bytes(data: bytes) -> str:
 def _checked_records(stream: BinaryIO) -> Iterator[tuple[str, int, int, int, bytes]]:
     """Keep the record-reading boundary visible at the bridge call site."""
     yield from iter_krec_records(stream)
+
+
+def route_record_value(value: bytes, record_index: int) -> RoutedValue:
+    """Validate and route one complete EEEEEEEE Kafka Value atomically."""
+    items = list(parse_outer_items(value, record_index))
+    dtype_counts: collections.Counter[int] = collections.Counter()
+    outputs: list[tuple[str, bytes]] = []
+    rtcm_frames = message_72 = message_1697 = 0
+
+    for dtype, item in items:
+        dtype_counts[dtype] += 1
+        if dtype == 131:
+            rtcm_frames += len(validate_rtcm_frames(item, record_index))
+            outputs.append((OBS_CHANNEL, item))
+        elif dtype in (134, 135):
+            for message, frame, _gnss_time in iter_sino_frames(item, record_index):
+                selected = (dtype == 135 and message == 72) or (
+                    dtype == 134 and message == 1697
+                )
+                if not selected:
+                    continue
+                outputs.append((SINO_CHANNEL, frame))
+                if message == 72:
+                    message_72 += 1
+                else:
+                    message_1697 += 1
+    return RoutedValue(
+        len(items),
+        dtype_counts,
+        rtcm_frames,
+        message_72,
+        message_1697,
+        tuple(outputs),
+    )
+
+
+def classify_record_error(exc: FixtureError) -> str:
+    """Map a strict parser failure to one stable bridge counter."""
+    text = str(exc)
+    if "RTCM3" in text:
+        return "rtcm_crc_errors"
+    if "Sino" in text:
+        return "sino_crc_errors"
+    if "item" in text and ("data length" in text or "item header" in text):
+        return "dtype_length_errors"
+    return "outer_errors"
 
 
 def build_replay_plan(input_path: Path) -> ReplayPlan:
@@ -122,54 +180,27 @@ def build_replay_plan(input_path: Path) -> ReplayPlan:
                 last_timestamp[partition] = timestamp
 
                 try:
-                    items = list(parse_outer_items(value, record_index))
+                    routed = route_record_value(value, record_index)
                 except FixtureError as exc:
-                    text = str(exc)
-                    if "item" in text and (
-                        "data length" in text or "item header" in text
-                    ):
-                        stats["dtype_length_errors"] = int(
-                            stats["dtype_length_errors"]
-                        ) + 1
-                    else:
-                        stats["outer_errors"] = int(stats["outer_errors"]) + 1
+                    key = classify_record_error(exc)
+                    stats[key] = int(stats[key]) + 1
                     raise
-                if len(items) > 1:
+                if routed.item_count > 1:
                     stats["records_with_multiple_items"] = int(
                         stats["records_with_multiple_items"]
                     ) + 1
-
-                for dtype, item in items:
-                    dtype_counts[dtype] += 1
-                    if dtype == 131:
-                        try:
-                            messages = validate_rtcm_frames(item, record_index)
-                        except FixtureError:
-                            stats["rtcm_crc_errors"] = int(stats["rtcm_crc_errors"]) + 1
-                            raise
-                        stats["rtcm_frames"] = int(stats["rtcm_frames"]) + len(
-                            messages
-                        )
-                        obs_chunks.append(item)
-                        events.append(ReplayEvent(tick_ms, OBS_CHANNEL, item))
-                    elif dtype in (134, 135):
-                        try:
-                            frames = iter_sino_frames(item, record_index)
-                            for message, frame, _gnss_time in frames:
-                                selected = (dtype == 135 and message == 72) or (
-                                    dtype == 134 and message == 1697
-                                )
-                                if not selected:
-                                    continue
-                                sino_chunks.append(frame)
-                                events.append(
-                                    ReplayEvent(tick_ms, SINO_CHANNEL, frame)
-                                )
-                                key = f"message_{message}"
-                                stats[key] = int(stats[key]) + 1
-                        except FixtureError:
-                            stats["sino_crc_errors"] = int(stats["sino_crc_errors"]) + 1
-                            raise
+                dtype_counts.update(routed.dtype_counts)
+                stats["rtcm_frames"] = int(stats["rtcm_frames"]) + routed.rtcm_frames
+                stats["message_72"] = int(stats["message_72"]) + routed.message_72
+                stats["message_1697"] = (
+                    int(stats["message_1697"]) + routed.message_1697
+                )
+                for channel, chunk in routed.outputs:
+                    if channel == OBS_CHANNEL:
+                        obs_chunks.append(chunk)
+                    else:
+                        sino_chunks.append(chunk)
+                    events.append(ReplayEvent(tick_ms, channel, chunk))
     except FixtureError as exc:
         if "record value" in str(exc) or "metadata" in str(exc):
             stats["record_boundary_errors"] = int(
