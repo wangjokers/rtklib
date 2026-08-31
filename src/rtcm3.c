@@ -1990,7 +1990,7 @@ static void save_msm_obs(rtcm_t *rtcm, int sys, msm_h_t *h, const double *r,
                          const int *ex, const int *half)
 {
     const char *sig[32];
-    double tt,freq;
+    double freq;
     uint8_t code[32];
     char *msm_type="",*q=NULL;
     int i,j,k,type,prn,sat,fcn,index=0,idx[32];
@@ -2043,10 +2043,6 @@ static void save_msm_obs(rtcm_t *rtcm, int sys, msm_h_t *h, const double *r,
         else if (sys==SYS_SBS) prn+=MINPRNSBS-1;
         
         if ((sat=satno(sys,prn))) {
-            tt=timediff(rtcm->obs.data[0].time,rtcm->time);
-            if (rtcm->obsflag||fabs(tt)>1E-9) {
-                rtcm->obs.n=rtcm->obsflag=0;
-            }
             index=obsindex(&rtcm->obs,rtcm->time,sat);
         }
         else {
@@ -2163,6 +2159,13 @@ static int decode_msm_head(rtcm_t *rtcm, int sys, int *sync, int *iod,
         if (h->cellmask[j]) ncell++;
     }
     *hsize=i;
+
+    /* discard a completed or previous-epoch set before satellite mapping */
+    if (rtcm->obsflag||
+        (rtcm->obs.n>0&&
+         fabs(timediff(rtcm->obs.data[0].time,rtcm->time))>1E-9)) {
+        rtcm->obs.n=rtcm->obsflag=0;
+    }
     
     time2str(rtcm->time,tstr,2);
     trace(4,"decode_head_msm: time=%s sys=%d staid=%d nsat=%d nsig=%d sync=%d iod=%d ncell=%d\n",
@@ -2182,7 +2185,7 @@ static int decode_msm0(rtcm_t *rtcm, int sys)
     int i,sync,iod;
     if (decode_msm_head(rtcm,sys,&sync,&iod,&h,&i)<0) return -1;
     rtcm->obsflag=!sync;
-    return sync?0:1;
+    return !sync&&rtcm->obs.n>0?1:0;
 }
 /* decode MSM 4: full pseudorange and phaserange plus CNR --------------------*/
 static int decode_msm4(rtcm_t *rtcm, int sys)
@@ -2235,7 +2238,7 @@ static int decode_msm4(rtcm_t *rtcm, int sys)
     save_msm_obs(rtcm,sys,&h,r,pr,cp,NULL,NULL,cnr,lock,NULL,half);
     
     rtcm->obsflag=!sync;
-    return sync?0:1;
+    return !sync&&rtcm->obs.n>0?1:0;
 }
 /* decode MSM 5: full pseudorange, phaserange, phaserangerate and CNR --------*/
 static int decode_msm5(rtcm_t *rtcm, int sys)
@@ -2302,7 +2305,7 @@ static int decode_msm5(rtcm_t *rtcm, int sys)
     save_msm_obs(rtcm,sys,&h,r,pr,cp,rr,rrf,cnr,lock,ex,half);
     
     rtcm->obsflag=!sync;
-    return sync?0:1;
+    return !sync&&rtcm->obs.n>0?1:0;
 }
 /* decode MSM 6: full pseudorange and phaserange plus CNR (high-res) ---------*/
 static int decode_msm6(rtcm_t *rtcm, int sys)
@@ -2355,7 +2358,7 @@ static int decode_msm6(rtcm_t *rtcm, int sys)
     save_msm_obs(rtcm,sys,&h,r,pr,cp,NULL,NULL,cnr,lock,NULL,half);
     
     rtcm->obsflag=!sync;
-    return sync?0:1;
+    return !sync&&rtcm->obs.n>0?1:0;
 }
 /* decode MSM 7: full pseudorange, phaserange, phaserangerate and CNR (h-res) */
 static int decode_msm7(rtcm_t *rtcm, int sys)
@@ -2422,7 +2425,7 @@ static int decode_msm7(rtcm_t *rtcm, int sys)
     save_msm_obs(rtcm,sys,&h,r,pr,cp,rr,rrf,cnr,lock,ex,half);
     
     rtcm->obsflag=!sync;
-    return sync?0:1;
+    return !sync&&rtcm->obs.n>0?1:0;
 }
 /* decode type 1230: GLONASS L1 and L2 code-phase biases ---------------------*/
 static int decode_type1230(rtcm_t *rtcm)

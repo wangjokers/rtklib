@@ -23,6 +23,7 @@ OPTIONS_TARGET := test_b2b_options$(EXEEXT)
 SINO_MESSAGE72_TARGET := ../../build/realtime-fixture/test_sino_message72$(EXEEXT)
 RTKSVR_REPLAY_TARGET := ../../build/realtime-fixture/test_rtksvr_file_replay$(EXEEXT)
 PHASE2A_TARGET := ../../build/realtime-fixture/test_rtcm1127_pcode$(EXEEXT)
+MSM_EVENT_TARGET := ../../build/realtime-fixture/test_rtcm_msm_event$(EXEEXT)
 PNTPOS_BDS_TARGET := ../../build/realtime-fixture/test_pntpos_bds_prange$(EXEEXT)
 RTPPP_TARGET := ../../build/realtime-fixture/rtppp$(EXEEXT)
 RTKSVR_REPLAY_LDLIBS := $(LDLIBS)
@@ -62,7 +63,7 @@ endif
 
 .PHONY: all sino-receiver unicore-receiver replay stage4e-diag cbias options \
 	message72 fixture-test realtime-replay phase2a-realtime pntpos-bds-prange \
-	phase3a-rtppp
+	msm-event phase3a-rtppp
 
 all: $(TARGET)
 
@@ -86,6 +87,8 @@ fixture-test:
 realtime-replay: $(RTKSVR_REPLAY_TARGET)
 
 phase2a-realtime: $(PHASE2A_TARGET)
+
+msm-event: $(MSM_EVENT_TARGET)
 
 pntpos-bds-prange: $(PNTPOS_BDS_TARGET)
 
@@ -131,6 +134,12 @@ $(RTKSVR_REPLAY_TARGET): $(RTKSVR_REPLAY_SRCS)
 $(PHASE2A_TARGET): test_rtcm1127_pcode.c $(RTKSVR_REPLAY_SRCS)
 	mkdir -p ../../build/realtime-fixture
 	$(CC) $(CFLAGS) -DTRACE -pthread -o $@ test_rtcm1127_pcode.c \
+		$(filter-out test_rtksvr_file_replay.c,$(RTKSVR_REPLAY_SRCS)) \
+		$(RTKSVR_REPLAY_LDLIBS) -pthread
+
+$(MSM_EVENT_TARGET): test_rtcm_msm_event.c $(RTKSVR_REPLAY_SRCS)
+	mkdir -p ../../build/realtime-fixture
+	$(CC) $(CFLAGS) -DTRACE -pthread -o $@ test_rtcm_msm_event.c \
 		$(filter-out test_rtksvr_file_replay.c,$(RTKSVR_REPLAY_SRCS)) \
 		$(RTKSVR_REPLAY_LDLIBS) -pthread
 
